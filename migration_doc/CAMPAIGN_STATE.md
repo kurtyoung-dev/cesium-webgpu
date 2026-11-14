@@ -989,8 +989,8 @@ plan critique's order (B-P added from the strays scout): B1 cloud W5 + W6 (lane 
 job run; landed as Batch 1669, `b142b73c19`); B-K and B-M (lane Faramir: the two Karma reds of main and the march-budget defect, each
 reviewed, Arwen P1 HOLDS-WITH-FIXES; B-K landed as Batch 1670, `49cd09660d`; B-M landed as Batch 1671, `3f5f55c556`, after this round's records were cut, its records round 16's); B2 water (Gemini Wave 6.5, in three feature parts: globe water with data, SSR and the continuum; the FFT ocean; the kit
 remainder); B3 cloud integration (the Codex Sol lane Irilde's tree on B1's, in three feature parts: default path and lifecycle, the
-experimental routes, the distant-cloud library); B-P the three un-landed kit lanes (Taur, Lothlorien, Beleriand: reviewed HOLDS,
-frozen, never landed); B5 and B6 (the Codex groups G2b to G6, regenerated on B3's and then B5's tree), which take the place of the
+experimental routes, the distant-cloud library); B-P the three kit lanes un-landed when the plan was made (Taur, Lothlorien, Beleriand: reviewed HOLDS,
+frozen, not landed then; Taur has since landed as Batch 1677, `362d659b1c`); B5 and B6 (the Codex groups G2b to G6, regenerated on B3's and then B5's tree), which take the place of the
 waves W7a … W11; B7 held (Gemini's unfinished w6b + w6c, decision M-2). Plan waves W7b and W12 are closed as waves
 (`NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`). The wave-end gate runs after B3 and after B6. The plan, its critique (SOUND WITH CHANGES)
 and two scout reports: `cesium-webgpu-worker-archive/lanes-2026-11-06/integration-plan/`. The Antigravity water program lands as

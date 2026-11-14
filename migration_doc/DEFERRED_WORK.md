@@ -35650,8 +35650,8 @@ in (both files are plans and scout reports; every figure below is theirs, not re
   R-9): B3a default path and lifecycle (3652, 3779, async noise and startup, worker lifetime, context cleanup, budgets and ACK, the
   `CloudVolumetrics` decomposition), B3b the experimental routes (typed weather, the D2 and single-deck previews, the Root/View
   bridge), B3c the distant-cloud library (spatial proxy R5b-R5e, formed R6, source ids 45-47; decision M-3).
-- **B-P** the three un-landed kit lanes the plan and critique never named (Quickbeam, "STILL UN-LANDED AND OF VALUE" 2-4), each
-  reviewed HOLDS, frozen and never landed: Taur (KIT-5 phase A, `taur.patch` md5 `1290da6b2da9d1f248154ece01cb8fbf`, 20 paths; Erellont
+- **B-P** the three kit lanes, un-landed when this round was cut, the plan and critique never named (Quickbeam, "STILL UN-LANDED AND OF VALUE" 2-4), each
+  reviewed HOLDS, frozen and not landed when this round was cut: Taur (landed since, as Batch 1677, `362d659b1c`; as cut then, KIT-5 phase A, `taur.patch` md5 `1290da6b2da9d1f248154ece01cb8fbf`, 20 paths; Erellont
   P2 "Verdict: HOLDS"), Lothlorien (the probe-kit model harvest, `lothlorien.patch` md5 `3074f34b107030c817019ad9950c8510`, 62 paths;
   Doriath P4 "Verdict: HOLDS") and Beleriand (the FW-13 SSR instrument and the f16 catch-up, `beleriand.patch` md5
   `63834c6570196ef3bab660755b003f37`, 10 paths; Mithrim P2 "VERDICT: HOLDS"). The three md5s and the three verdict lines were re-read by
@@ -35926,3 +35926,471 @@ packet section 6.
   vertical weather, the experimental independent populations, the continuous synoptic structures and weather content reuse);
   section C's W4 E-ON line gains the Phase 2 figures, with lines for the integration program and the banked WebGL weather fallback;
   section D gains the W7b and W12 units and the other units closed by `NEW-CODEX-PLAN-WAVES-W7B-W12-CLOSED`.
+
+## 2026-11-14 — rows batch 16a: follow-up rows that lived only in lane records (Taur round 5, the spec-bundle freshness guard, the buildWatch inject file, the Codex cloud batch, the seat's finds of 2026-11-14)
+
+Rows batch 16a (worker Nargil, for the seat Gandalf), written and checked at main's tip `db9913d69c` (Batch 1682). Reviews and Edge legs wrote
+follow-up rows "ready to file" and the lanes landed without them; a recheck of the finished clones found them on main in no form
+(`cesium-webgpu-worker-archive/lanes-2026-11-14/clone-retirement/RECHECK_NOTES.md`, the entries for the dorlomin and linwe clones). This
+section files them. Each row was re-opened at its source and then checked against the tip by reading it (no build, no browser, no test run
+was made for this batch); a source row that was no longer true at the tip is not filed, and a row already on main is named in the Notes at
+the end. It is not records round 16: no rulings, no batch tables, no inventory changes. Source folders, all under
+`cesium-webgpu-worker-archive/`: the dorlomin harvest is `lanes-2026-11-14/clone-retirement/cesium-lane-dorlomin-20261113/_lane-out/`
+(Taur, rounds 1 to 5; landed as Batch 1677, `362d659b1c`); the linwe harvest is
+`lanes-2026-11-14/clone-retirement/cesium-lane-linwe-20261106/_lane-out/` (the freshness guard, rounds 1 to 8; landed as Batch 1681,
+`f3d00611ef`); the leg-2 folder is `lanes-2026-11-13/edge/cx-cloud-leg2/` (the Codex cloud batch, landed as Batch 1682, `db9913d69c`); the
+seat's record is `lanes-2026-11-13/SEAT_RECORD_2026-11-13.md`.
+
+### NEW-NODE26-STRIP-TYPES-TRANSFORM — five specs passed `mode: "transform"` to `stripTypeScriptTypes`, which Node v26.13.1 rejects — **CLOSED** (Batch 1675, `1e9ca08e9b`; filed for the record)
+
+The Taur round-5 review filed it OPEN: `polyline-nearclip-wiring.spec.mjs` (`:1476-1479` at the lane's base `b2e774dd7b`) called
+`stripTypeScriptTypes(source, { mode: "transform" })`, Node v26.13.1 rejects the mode ("must be one of: 'strip'") as an uncaught exception
+after the spec's tests end, and `npm run test-visual-regression-node` read red (1712 of 1713) on `b2e774dd7b` with or without the Taur patch;
+four more specs passed the same mode (`clustered-light-upload-invalidation`, `globe-ground-atmosphere-scene-mode-gate`,
+`globe-material-log-depth-module`, `globe-material-pipeline-format-axis`). **At the tip it is repaired:** Batch 1675 (`1e9ca08e9b`) moved
+all five onto `transformEngineTypeScript` of `Tools/visual-regression/lib/engine-ts-transform.mjs` (esbuild `transformSync`); the spec that
+raised the error imports it at `polyline-nearclip-wiring.spec.mjs:54` and calls it at `:1477`. A search for `mode: "transform"` under
+`Tools`, `packages/*/Source` and `scripts` finds only that module's own explanatory comment (`engine-ts-transform.mjs:8`); the two specs
+that still call `stripTypeScriptTypes` (`ocean-fft-controls.spec.mjs:419`, `weather-provider-time-model.spec.mjs:849` and `:887`) pass no
+mode. Read, not re-run on Node 26 (no test run in this batch). **Source:** dorlomin harvest `REVIEW_UTUMNO_TAUR_P5.md` section 9 (lines
+159-166) and `ROUND5_DORLOMIN.md` G-2 (lines 166-171).
+
+### NEW-EDGE-JOB-MEASURED-HARNESS-HALF-UNSCOPED — the edge-job runner counts any entry with a `.json` under `performance/` as measured, whatever its family — **OPEN** (probe-kit tooling; found by reviewer Utumno, Taur round 5)
+
+`readEntryReceipts` collects `harnessArtifacts` from `<output>/performance/` for every entry, skipping only `.first-red.json`
+(`Tools/visual-regression/edge-job-runner.mjs:558-564`), and `summarizeMeasured` counts an `ok` or `verdict-fail` entry with a report or
+with any harness artifact as measured (`:736-746`). The rule exists for the two c11 harnesses, which write their canonical artifact there
+instead of a top-level report; they are the two of the 60 entries of `edge-job-plan.json` whose probe does not call `isEntryPoint`
+(`c11/c11-13`, `c11/c11-90`; counted by this round with a read of every plan probe). It is exact for the shipped plan, because the review
+found no other plan probe writing under `performance/` (the reviewer's claim, not re-derived here), and loose for a custom `--plan`.
+**Closes when:** the half is scoped to the entries the plan marks as harness-protocol, with a spec case and an inertness mutant.
+**Source:** dorlomin harvest `REVIEW_UTUMNO_TAUR_P5.md:162`.
+
+### NEW-EDGE-JOB-EXIT0-NO-RECEIPT — an entry that exits 0 or 1 having written no report and no receipt reads `ok` (or `verdict-fail`) and the job exits 0 — **OPEN** (probe-kit tooling; narrowed by Batch 1677, not closed; carries round 4's rows 20 and 21)
+
+At the tip `classifyEntry` still decides from the exit code first (`Tools/visual-regression/edge-job-runner.mjs:581-600`: exit 0 is `ok` at
+`:593`, exit 1 is `verdict-fail` at `:596`, whatever the output folder holds), and `main` still returns 0 whenever no finished entry exited
+outside its `expectedExit` and none stopped the job (`:982`). What Batch 1677 changed is that a receiptless exit 0 is now named: the job
+prints a second line `N of M finished entries measured (exit 0 or 1 with a receipt): <names>` (`measuredLine`, `:755-761`, written at `:900`)
+and `elapsed.json` carries `measured` (`:812`). The exit code and the INDEX rows are unchanged, so a job of N entries that measured nothing
+still exits 0 with `0 of N ... none`. Measured causes (round 4, on copies): a probe that crashes before measuring exits 1 and is indexed
+`verdict-fail` with red verdict ids `none` (two crashing fake probes under `[0,1]` gave exit 0 and `0 of 2`), and
+`NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN` below. **Row 21 of round 4, filed here:** an exit 0 or 1 beside a `-refusal.json` or `-error.json`
+record is read the same way, because the exit is read first and `readEntryReceipts` looks at those files only for the refusal id and the elapsed time
+(`:526-530`, `:548`). The two c11 entries keep a hand check on `<entry>/performance/<name>.json`. **Until it is closed, the executor's hand
+check stands:** (a) every `ok` or `verdict-fail` row of a non-c11 entry shows a report md5 or a receipt `elapsedMs`, not `n/a`; (b) every
+`verdict-fail` row names at least one red verdict id; (c) each c11 entry directory holds its `performance/<name>.json`; (d) no `ok` or
+`verdict-fail` entry directory holds a `*-refusal.json` or `*-error.json`. **Closes when:** for a runtime-resident entry (the `@runtime`
+marker the runner already reads in `probeAcceptsOutput`) an exit 0 or 1 with no `-runtime.json` is outside its expectedExit (to be checked
+against `lib/probe-runtime-receipts.mjs`), and the refusal and error records count against an exit 0 or 1. **Source:** dorlomin harvest
+`round4/REVIEW_TELPERION_TAUR_P4.md` (rows 20 and 21, lines 71-93) and `REVIEW_UTUMNO_TAUR_P5.md:163`.
+
+### DX-EDGE-JOB-CUSTOM-PLAN-ERROR-EXITS — `resolvePlan` accepts any probe exit code in a plan's `expectedExit`, so a custom `--plan` can let an all-errored job exit 0 — **OPEN** (probe-kit tooling; round 4's row 22)
+
+`resolvePlan` accepts an `expectedExit` listing any value of `PROBE_EXIT_CODES` (0, 1, 2 and 3: `Tools/visual-regression/lib/probe-refusal.mjs:28-33`,
+the check at `Tools/visual-regression/edge-job-runner.mjs:384-392`), so a custom `--plan` that lists 2 or 3 turns an all-errored or
+all-refused job into exit 0. The shipped plan is exact: all 60 entries carry `[0,1]` (counted by this round from `edge-job-plan.json`), and
+the spec's census reads `DEFAULT_PLAN_PATH` (round 4: Laurelin and Galathilion each set one copy-plan entry to `[0,1,3]` and two tests went
+red; not re-run). **Hand check:** for a custom plan the INDEX `expected` column holds only `0,1`, or the job is read entry by entry.
+**Closes when:** `resolvePlan` refuses 2 and 3 in `expectedExit` unless the entry says why, or the job's exit refuses an all-errored run,
+with a spec case and an inertness mutant. **Source:** dorlomin harvest `round4/REVIEW_TELPERION_TAUR_P4.md:94-101`.
+
+### NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN — run with `node --preserve-symlinks-main` through a link, the edge-job runner spawns probes whose entry guard skips their main, and the job reads clean — **OPEN** (probe-kit tooling; round 4's R2, reproduced by the lead then)
+
+Under `--preserve-symlinks-main` through a link, with `--job-dir` under the same link, `HERE` is taken from `import.meta.url` and is the
+link path (`Tools/visual-regression/edge-job-runner.mjs:91-92`: `REPOSITORY_ROOT` is `path.resolve(HERE, "..", "..")`, not a real path);
+probes are spawned from it with a relative path and no flag (`:436-440`, `cwd: REPOSITORY_ROOT` at `:833`); and 58 of the 60 shipped entries
+run a probe whose entry guard compares the typed path (`isEntryPoint`, `Tools/visual-regression/lib/probe-runtime.mjs:652-657`:
+`pathToFileURL(path.resolve(argv[1])).href === moduleUrl`; counted by this round, the two c11 entries are the others), so each skips its
+`main` and exits 0 with no receipt. Round 4's lead measured it on a copy (a fake probe carrying that comparison, a junction, the flag, the
+job directory under the junction): exit 0, INDEX `ok`, report `none`, receipt `n/a`, entry directory empty, `0 of 1 ... none`; without the
+flag the same probe measured (INDEX `ok`, receipt `7`), and with the flag and the job directory on the real path the runner refused (exit 2). Batch 1677 made the runner's own
+entry guard compare real paths (`isInvokedAsScript`, `edge-job-runner.mjs:996-1008`), which fixes a run through a link without the flag but
+not this case, and the `measured` line now says `0 of N ... none` while the exit stays 0 (read from `:982` and `:900`, not re-run here).
+**Closes when:** `REPOSITORY_ROOT` comes from `fs.realpathSync.native` of the runner's directory so that a job directory under the link is
+refused (exit 2), pinned by a spec that spawns the runner through a junction under the flag over a node-only fake probe with
+`isEntryPoint`'s comparison, plus a mutant that restores the unresolved root. **Source:** dorlomin harvest
+`round4/REVIEW_TELPERION_TAUR_P4.md` R2 (lines 131-145).
+
+### NEW-EDGE-JOB-FAMILY-REPEAT — the edge-job runner keeps only the last `--family` when the flag is repeated — **OPEN** (probe-kit tooling; round 4's R4)
+
+`parseRunnerArgs` assigns `options.families` at each `--family` (`Tools/visual-regression/edge-job-runner.mjs:933-937`), so
+`--family c11 --family weather` runs the weather family alone, with no c11 index, and exits 0; the job is not empty, so the refusal of an
+empty selection does not fire. Round 4 measured it on a copy: the dry run printed 9 weather commands and no c11 one (the plan has 9 weather
+entries, counted by this round). Until it is closed, give `--family` once, with a comma list. **Closes when:** a repeated `--family` is a
+usage error (exit 2) or the families are taken as a union, with a spec case. **Source:** dorlomin harvest
+`round4/REVIEW_TELPERION_TAUR_P4.md` R4 (lines 151-154).
+
+### NEW-EDGE-JOB-RECORD-NO-COMPLETION-MARK — a runner killed mid-job leaves an `elapsed.json` that differs from a finished shorter job only by a missing `stoppedAt` — **OPEN** (probe-kit tooling; round 4's R5)
+
+`runJob` rewrites `elapsed.json` after every entry (`Tools/visual-regression/edge-job-runner.mjs:873-884`) from a record that holds only the
+schema, the job directory, the start time and the finished entries (`:804-809`), with two summaries of those entries (`:811-812`); `stoppedAt` is written once, after the loop (`:896-897`),
+and the plan path, the families and the selected entry list are never recorded. A runner killed mid-job (signal, crash, power) therefore
+leaves the finished entries with `unexpectedExits` 0, indistinguishable from a clean shorter job except by the absent `stoppedAt` key. The
+process exit is non-zero (130 measured by Laurelin, round 4, with a hung entry by Galathilion), so it is not an exit-0 route; only the
+record misleads. Until it is closed, an executor checks that `stoppedAt` is present in `elapsed.json` and that its entries equal the dry-run
+list for the same flags. **Closes when:** the record writes the plan path, the families and the selected family/id list at start, and a
+`finishedAt` field at the end. **Source:** dorlomin harvest `round4/REVIEW_TELPERION_TAUR_P4.md` R5 (lines 155-158).
+
+### DX-EDGE-JOB-PLAN-PORT-PINNED — all 60 entries of `edge-job-plan.json` pin port 8094, and the runner has no port option — **OPEN** (probe-kit tooling; the lane's F6, counts verified by reviewer Utumno)
+
+58 entries carry `--port 8094` and 2 carry `PROBE_BASE=http://localhost:8094` (counted by this round from `edge-job-plan.json`: 58 and 2, none
+other), and `parseRunnerArgs` accepts only `--dry-run`, `--plan`, `--job-dir` and `--family`
+(`Tools/visual-regression/edge-job-runner.mjs:926-940`), so a job on another port runs an edited copy of the plan (the 2026-11-06 smoke ran
+copies on 8100). A `--port` override would have to rewrite both forms, and the runtime and c11 protocols differ. **Closes when:** a
+`--port` option rewrites both forms, with its own spec and an inertness mutant. **Source:** dorlomin harvest `ROUND5_DORLOMIN.md:178-181`;
+`REVIEW_UTUMNO_TAUR_P5.md:164`.
+
+### DX-EDGE-JOB-STOPPED-NAMES-NEVER-RUN — a stopped edge job does not say which planned entries it never ran — **OPEN** (probe-kit tooling; round 4's smoke finding F1)
+
+When an entry stops the job the runner prints `STOPPED after <family>/<id>: <outcome>; no later entry was started and nothing is retried`
+(`Tools/visual-regression/edge-job-runner.mjs:888-893`), the finished-entry lines count only the entries reached, and `--dry-run` prints the
+commands without a count (`:786-792`); neither stdout, `INDEX.md` nor `elapsed.json` names or counts the planned entry that never ran, and
+the planned count is printed nowhere. Read at the tip; the smoke run that found it (executor Eowyn, round 4: "1 of 1 finished entries" with
+`wgs84/modes` never run) is not re-run. **Closes when:** the stop line and `elapsed.json` list the entries not started. **Source:**
+`lanes-2026-11-06/kit-strays-legolas/edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:65-67`; dorlomin harvest
+`REVIEW_UTUMNO_TAUR_P5.md:165` ("stay open as written").
+
+### DX-EDGE-JOB-INDEX-NONE-MEANS-NO-VERDICTS — the INDEX column "red verdict ids" reads `none` for a report that carries no verdicts at all — **OPEN** (probe-kit tooling; round 4's smoke finding F3)
+
+`renderFamilyIndex` prints `redVerdictIds.join(", ") || "none"` (`Tools/visual-regression/edge-job-runner.mjs:622-628`), and
+`readEntryReceipts` builds that list from the verdicts of the runtime receipt or the report, an empty list when there are none
+(`:539-546`), so a capture-only report with `verdicts: []` reads `none` exactly as a report whose verdicts all passed does. The smoke run
+met it on every wgs84 report (executor Eowyn, round 4); not re-run. **Closes when:** the cell tells "no verdicts" from "all verdicts
+green". **Source:** `lanes-2026-11-06/kit-strays-legolas/edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:70-71`.
+
+### DX-EDGE-JOB-INDEX-ERROR-RECORD-UNNAMED — an errored INDEX row does not name its error record or its message — **OPEN** (probe-kit tooling; round 4's smoke finding F4)
+
+An entry that exits 2 is classified `errored` (`Tools/visual-regression/edge-job-runner.mjs:581-600`) and its row reads `errored | none | none
+| none` for report md5, red verdict ids and refusal id (`:622-629`): `readEntryReceipts` reads a `-refusal.json` or `-error.json` only for
+`refusal.reason` and the elapsed time (`:526-530`, `:548`), so the error file and its message are named nowhere in the index. Read at the
+tip; the smoke run's `wgs84-error.json` case is not re-run. **Closes when:** the row names the error record and carries its first message
+line. **Source:** `lanes-2026-11-06/kit-strays-legolas/edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:72`.
+
+### DX-KIT-SERVED-BUILD-MESSAGE-DEAD-SERVER — with no server answering, the served-build refusal says the served bytes are not the bytes on disk — **OPEN** (probe-kit message; round 4's smoke finding F5)
+
+`runServedBuildPreflight` throws one message for every refusal of the preflight, "the served bytes are not the bytes on disk; rebuild, or
+restart the server with --serve-built" (`Tools/visual-regression/lib/probe-runtime.mjs:836-839`), while `decideServedBuildRefusal` gives two
+different reasons, `served-build-preflight-failed` (the preflight itself failed: no server, no answer) and
+`served-build-preflight-incomplete` (an artifact missing or unmatched) (`Tools/visual-regression/lib/probe-runtime-decisions.mjs:36-52`).
+The smoke run saw the first read as the message of the second, with `served.error: "fetch failed"` in the details (executor Eowyn, round 4;
+not re-run). **Closes when:** the message follows the reason (a server that does not answer says so). **Source:**
+`lanes-2026-11-06/kit-strays-legolas/edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:73-74`.
+
+### NEW-BUILDWATCH-IIFE-INJECT-DELETED — `gulp buildWatch` cannot rebuild the single-file bundle after a full build has run beside it — **OPEN** (main's own behaviour, inherited by the freshness guard; found by reviewer Linaewen, pass 6)
+
+A non-incremental IIFE build deletes the file its bundle injects: `bundleCesiumJs` builds the IIFE with `inject: [inlineWorkerPath]`
+(`Build/InlineWorkers.js`, `scripts/build.js:175`, `:309`) and then runs `rimraf.sync(inlineWorkerPath)` in the non-incremental branch
+(`:322`); the incremental branch keeps the context (`:317-319`) and the file is written by `bundleWorkers` (`:809`). A watch whose IIFE
+context was made before a full build (`npm test` or `gulp build` beside it) therefore fails its next IIFE rebuild with `Could not resolve
+"Build/InlineWorkers.js"`. The handlers that rebuild the IIFE are `rebuildGlsl`, `rebuildWgsl` and `rebuildSources`
+(`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:973-977`). The builds spec pins the failure and works around it: its comment states
+that the deletion is main's behaviour and not repaired (`:684-695`), the failing rows remove the inject file themselves
+(`inject: "absent"`) and assert the `INJECT_MISSING` message (`:702`), and the succeeding rows write the file back (`inject: "present"`),
+standing in for a watch that survived the deletion. The line was the same in `HEAD` before the guard (`:315` of that blob, read by the
+reviewer); the guard neither causes nor repairs it. **Read at the tip (the line and the spec rows); no watch was run.** **Closes when:**
+the full build leaves the inject file alone under a live watch (or the watch's IIFE context re-creates it), and the `inject: "present"`
+rows then run on the real behaviour. **Source:** linwe harvest `REVIEW_LINAEWEN_FRESHNESS_P6.md:189-196`.
+
+### NEW-FRESHNESS-OVER-TRIGGERS — the freshness records hash inputs no build copies or bundles, so edits that change no served byte make lanes stale — **OPEN** (build tooling; the lane's R-3, widened in round 3; landed in Batch 1681)
+
+At the tip a record hashes: every file under `packages/engine/Source/**` and `packages/widgets/Source/**` but the generated shader
+modules (`scripts/specBundleFreshness.js:104-107` and the groups at `:148-153`; the engine's Assets folder is a group of its own that only
+the output records read), which takes in the 31 tracked `.d.ts` files and the two
+tracked `.md` files there (counted by this round with `git ls-files`); the whole of `package.json`, `packages/engine/package.json`,
+`packages/widgets/package.json` and `node_modules/.package-lock.json` (`:76-81`), so a scripts-only edit or a devDependency-only install
+changes them; the whole of `gulpfile.js` (`:86-95`), so an edit to a test-only task changes it; and the Specs helper modules (`:112-146`),
+whose drift reads `source-drift` and so is answered by the lane's full build, or by a refusal in the release lane, never by the narrow
+spec-bundle rebuild, which `decideSpecLaneRebuild` keeps for `spec-set-drift` (`:1238-1241`; the lane table, with `canRebuild: false` for
+`release`, is at `:1141-1175`). The lane's claim, which this round read at the hashing and did not re-derive from the builds, is that none of
+these changes a served byte; so each such edit costs the default and workspace lanes one full build and makes the release lane refuse until
+`npm run build-release`. **Closes when:** inputs no build copies or bundles are excluded (`.d.ts`, `.md`), a helper-only drift takes the
+narrow path, and only the build-relevant part of the gulpfile is hashed, each pinned by a case of `specBundleFreshness.spec.mjs`.
+**Source:** linwe harvest `ROUND3_LINWE.md:95` ("New rows (ready to file)", lines 93-101).
+
+### NEW-FRESHNESS-RECORDS-SHIP-IN-PACKAGES — the guard's records would ship in the published packages and the release zip — **OPEN** (packaging; checked by the seat on 2026-11-14 and again by this round; landed in Batch 1681)
+
+The records are `SourceInputs.meta.json` (inside each Cesium output directory, the engine workers and the test workers) and
+`SpecList.meta.json` (beside each spec bundle). Nothing names them in a package list: the root `package.json` has no `files` key and
+`.npmignore` lists `/Build/Specs` (`:18`) but not `Build/Cesium` or `Build/CesiumUnminified`, so the two Cesium output records ship in the
+root package; `packages/engine/package.json` `files` takes `Build/**` and excludes only `Build/Specs/**`, the minify state and
+`Build/Unminified/**` (`:15-26`), so `packages/engine/Build/Workers/SourceInputs.meta.json` ships in the engine package; and
+`gulpfile.makezip.js` takes `Build/Cesium/**`, `Build/CesiumUnminified/**`, `Build/Specs/**` and `packages/engine/Build/**`, excluding only
+the e2e folder, the inline-workers file, the packages' `Build/Specs/**` and the engine's minify state (`:132-143`), so the release zip carries all of them but the two
+packages' spec-bundle records. Sizes on the seat worktree's last build (read 2026-11-14, `ls -l`): `Build/CesiumUnminified/SourceInputs.meta.json`
+244,080 bytes, `Build/Specs/SpecList.meta.json` 289,885, `packages/engine/Build/Specs/SpecList.meta.json` 275,459,
+`packages/engine/Build/Workers/SourceInputs.meta.json` 198,910, `Build/Specs/TestWorkers/SourceInputs.meta.json` 199,444; a search of those
+five files for a drive letter or a user directory finds none (they hold repository-relative paths and 16-hex-digit hashes). Read from the package lists, not confirmed with `npm pack --dry-run` (not
+run). **Closes when:** `**/SourceInputs.meta.json` and `**/SpecList.meta.json` are excluded in `.npmignore`, `gulpfile.makezip.js` and
+`packages/engine/package.json` `files`, and a packaging spec lists the excluded names. **Source:** linwe harvest `ROUND3_LINWE.md:96`;
+`SEAT_RECORD_2026-11-13.md:214`.
+
+### NEW-FRESHNESS-SPEC-BUNDLE-AND-TEST-WORKERS-NO-FLAVOUR — the spec-bundle and test-worker records carry no build flavour, so a minified build's bytes read fresh in the default lane — **OPEN** (build tooling; the lane's row from round 3, seat ruling 3; the owner decides whether it matters)
+
+`specRecord` and `testWorkersRecord` give `flavour: null` (`scripts/specBundleFreshness.js:806` and `:874`), while the Cesium output and
+engine-workers records carry the minify, pragma and variant flavour (`:763-790`) and `flavour-mismatch` is a staleness class of the
+others (`:1010-1018`). The lane's claim (round 3, measured then by the lane, not re-run here: no build): after `npm run build-release` or
+`gulp build --minify` the combined spec bundle and the test workers inline the shader modules the minified `buildCesium` regenerated (WGSL
+comments stripped; with `--minify` the GLSL too), and the default lane serves them as fresh; no stale source is served and the WGSL text
+differs in comments only, and the review (Adurant, pass 3) found no spec asserting it. The generated shader modules are left out of the
+hash for that reason (`:97-107`). **Closes when:** either a flavour is recorded for those two kinds and the lanes check it, or the
+decision that the difference is harmless is written down beside the hash exclusion, with a case of `specBundleFreshnessBuilds.spec.mjs`.
+**Source:** linwe harvest `ROUND3_LINWE.md:97`; `REVIEW_ADURANT_FRESHNESS_P3.md:211`.
+
+### NEW-FRESHNESS-GULPFILE-TEST-WIRING-UNPINNED — the three lines of `gulpfile.js` `test()` that run the lane plan are read by no `node --test` file — **OPEN** (spec gap; the lane's R-1, narrowed; the names changed after round 3)
+
+After round 4 the task builds one plan and calls it: `planSpecTestLane(argv, { buildEngine, buildWidgets, buildCesium, buildTestWorkers,
+buildCombinedSpecBundle, buildWorkspaceSpecBundle })` (`gulpfile.js:981`), then `await plan.full()` when neither `--production` nor
+`--release` is set (`:990-993`), `await plan.ensureFresh(...)` (`:1000`), and the Karma `files` and `proxies` from `plan.files` and
+`plan.proxies` (`:1010-1011`). The planner is pinned with injected builds (`scripts/__tests__/specBundleFreshness.spec.mjs:1512-1615`), but
+no `node --test` file reads `test()` in `gulpfile.js` (the files that name the gulpfile read it as a hashed tooling input,
+`specBundleFreshness.spec.mjs:1182`, or export a function of it, `ensureCesiumTypeDefinitions.spec.mjs:37`, or match two unrelated lines,
+`Tools/visual-regression/spec-offline-isolation.spec.mjs:883-885`); the end-to-end runs of a landing cover the lines. **Closes when:** a
+case reads the task (or runs it over stub builds) and asserts the call order and that `--production` skips only the up-front build.
+**Source:** linwe harvest `ROUND3_LINWE.md:98` and `LANDING_PACKET_ARAGORN.md:40`.
+
+### NEW-FRESHNESS-CHECK-COST-UNMEASURED — the cost of the lane freshness check has not been measured on a quiet machine, cold, or on the tip's guard at all — **OPEN** (measurement owed; the lane's R-10)
+
+The check hashes every file of the groups above on each `gulp test`, and no figure for it is recorded at the tip (a search of
+`scripts/specBundleFreshness.js` and `scripts/specTestLanePlan.js` for a cost or time finds none). The lane measured a round-3 tree only: medians
+over five checks per lane in one process while its own mutant builds ran, 1706 ms combined, 1991 ms release, 1248 ms engine, 1505 ms widgets,
+first reads 1248-2397 ms (`logs-r3/check-time-unbuilt-loaded.txt`); round 2 read 0.64-0.92 s on a warm file cache while another lane's Karma ran (the pass-2 review's figure) and main's own check about
+0.33 s. Those are not figures of the tip: rounds 4 to 8 rewrote the module and its groups (the output and worker records, the tooling
+group). **Closes when:** the lane's own script (`node _lane-out/scripts-r3/check-lanes.mjs --time 5` in the linwe harvest) or a successor is
+run on a quiet machine, warm and cold, and the figures are recorded with the date and the tree. **Source:** linwe harvest `ROUND3_LINWE.md`
+("Cost of the check", "New rows") and `HANDBACK_LINWE.md:25`.
+
+### DX-FRESHNESS-DOC-HEADERS — the freshness spec's `@purpose` line and one guide sentence still describe the guard before the rewrite — **OPEN** (documentation; the lane's R-9, one half already done)
+
+The catalog half is done: `TOOLING_CATALOG.md:2458` lists the builds spec. Two lines remain. `scripts/__tests__/specBundleFreshness.spec.mjs:4`
+says the spec covers "added/removed/changed spec files" flipping the manifest comparison, and the catalog repeats it
+(`TOOLING_CATALOG.md:2457`), while the spec now also covers source inputs, the tooling and pin groups, the lanes and the plan (for example
+the case at `:1181` "a build-tooling change makes every lane stale" and the planner cases at `:1512-1615`). And
+`CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md:1088` says `--production` "skips the useless root rebuild that masks staleness" in a section
+whose lead-in reads as if the trap were still open (`:1070-1086`); at the tip `--production` skips only the up-front build
+(`gulpfile.js:990-993`) and a stale lane's rebuild still runs in `plan.ensureFresh` (`:1000`), as `DEBUGGING_GUIDE.md:1312-1321` says.
+**Closes when:** the `@purpose` line is rewritten (the catalog follows from it) and the guide line says that a stale lane runs its full
+build under `--production`. **Source:** linwe harvest `ROUND3_LINWE.md:100`.
+
+### NEW-FRESHNESS-SPEC-SETTLE-WAIT — the five failed-removal rows of the builds spec wait eight seconds, a clock where completion could be observed — **OPEN** (spec hygiene; reviewer Iantiaur, pass 7)
+
+Each failed-removal row ends with `["settle", 8000]` (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:1281`, driver at `:279-282`)
+before the parent reads the served files. Correct code cannot go red there (nothing writes; no write in 20 s was measured), and a body that
+was started anyway wrote 111 ms after the rejection (the reviewer's cell C13), so the wait is sound but it is a clock. **Closes when:** the
+row awaits `watch.dispose()` (esbuild waits for the rebuild in flight; measured by the reviewer: true under C13, false on the patch) or lets
+the child end without the driver's `process.exit(0)` (`:306`) before the parent reads, so that "no body ran" is observed by completion and
+not by time. **Source:** linwe harvest `REVIEW_IANTIAUR_FRESHNESS_P7.md:235-239`.
+
+### NEW-FRESHNESS-SPEC-CRASH-REDS — two matrix cells are red only because the child dies on an unhandled rejection — **OPEN** (matrix hygiene; reviewer Iantiaur, pass 7)
+
+The lane's cell C12 (the removal not awaited) and the reviewer's K7 (a handler not awaiting its rewrite) read red through
+`steps [...] exited 1` (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:342`), because the child dies on an unhandled rejection;
+with `NODE_OPTIONS=--unhandled-rejections=warn` both are red on the rows' own assertions (C12w "went on although a record could not be
+removed"; K7w "wrote SPEC-W1" and "the child reported ok"), so the rows hold. At the tip `runSteps` passes the parent's environment unchanged
+(`:318-330`) and the driver installs no handler. The cells are the lane's and the reviewer's, not part of the repository, and were not re-run.
+**Closes when:** the matrix records the warned run, or the spec's child runs with the option so that the rows' own assertions decide.
+**Source:** linwe harvest `REVIEW_IANTIAUR_FRESHNESS_P7.md:240-243`.
+
+### NEW-FRESHNESS-SPEC-COUNTER-THRESHOLDS — a counter that skips the removal from the Nth call on is caught only for N inside the long watch's call counts — **OPEN** (known limit of the spec; read for, not enumerated; reviewer Iantiaur, pass 7)
+
+The long watch is 14 entries (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:1020-1034`); counted by this round from the `calls`
+arrays at the tip, the handlers are called `rebuildSpecs` 4 times, `rebuildSources` 5, `rebuildGlsl` 3, `rebuildSpecList` 3 and `rebuildWgsl`
+2 times (17 calls). A per-handler or watch-wide counter that skips the removal from the Nth call on is red only for N within those counts;
+a larger constant is enumerable by no finite sequence and is read for in review, like a clock. **Closes when:** it does not close: the
+class statement of S-1113-22 ("one edit of the code as it stands; new code keyed on the clock, the environment or an argument is read, not
+enumerated") is the answer; the row records the limit. **Source:** linwe harvest `REVIEW_IANTIAUR_FRESHNESS_P7.md:247-250` (the same source's note at `:244-246` is the cast note below); the seat's
+S-1113-22 in `SEAT_RECORD_2026-11-13.md`.
+
+### NEW-FRESHNESS-SPEC-SECOND-BODY-UNSEEN — in the long watch's entry 14 the second call's body is not shown to run — **OPEN** (spec note; outside the class; reviewer Andram, pass 8)
+
+In entry 14 (`rebuildSources` started twice in overlap, `scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:1034`) the edit the second
+call should build is written before either call starts (the `write` step at `:1086` precedes `watchOverlap` at `:1099`), and in the
+reviewer's cell R-K1 it is written a few milliseconds after the first call's removal and the first call's esbuild read still picks it up; so
+neither shows that the second call of a running handler runs its own body, and the reviewer's cell X1 (the second call removes the records,
+then returns the running call) is green on both. Freshness is not at stake (the records are removed and the lane reads stale), so it is
+outside the class of S-1113-22. **Closes when:** the second edit is written only after the first call's bundle has been written, and
+the spec then requires it in the served file. **Source:** linwe harvest `REVIEW_ANDRAM_FRESHNESS_P8.md:166-172`.
+
+### NEW-CLOUD-CX-PRIMARY-REUSE-NOT-EXERCISED — the reuse-on page of `E-RECON-timeline` can never request primary reuse, so the reuse row (C5) was never exercised — **OPEN** (kit page owed; the seat's ruling S-1113-24a: NOT EXERCISED, never a pass; Batch 1682 landed without it)
+
+The primary-reuse march is requested only while the cloud transmittance capture is on: `primaryReuseRequested` is `captureRequested &&
+config.cloudReusePrimaryIntegral === true && cache.executeSerial > 0 && !cache.usingStartupPreview`
+(`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:5423-5428`; the lines the ruling cited, `:5409-5413`, have moved).
+`captureRequested` reaches that function from `godRayEffect?.enabled === true && config.scene.godRayCloudAware === true`
+(`WebGPUSceneRendererPostFrustumChain.ts:220-222`; the engine writes `scene.godRayCloudAware` nowhere, the application sets it), or, in
+`executeProceduralClouds`, from `cache.maskCaptureEnabled` (`:6636`), which `setCloudTransmittanceCapture` sets (`:1891-1902`) and which
+no other file of `packages/engine/Source` calls. The cell's `reuse-on` page sets only `experimental: { cloudReusePrimaryIntegral: true }`
+(`Tools/visual-regression/lib/landing-cell-table.mjs:693-719`) and neither it nor its rig (`rigs/cloud-reconstruction-medium-1080p.mjs`) mentions
+god rays. So the Edge leg's zero reuse keys on both arms is the engine doing what it should; the row's premise was the kit lane's. The
+timeline reader already counts reuse keys (`lib/cloud-reconstruction-timeline.mjs:449-467`); the leg also read "per-frame bound reuse
+key: NOT AVAILABLE". Batch 1682's message says it plainly: "the primary-reuse row was not exercised". **Closes when:** a reuse page turns
+the god-ray effect and `scene.godRayCloudAware` on, reads at least one reuse key on the patched build, and a mutant that stops requesting
+reuse turns it red. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F1 (line 35) and table row C5 (line 13); `SEAT_RECORD_2026-11-13.md:169` and `:161`.
+
+### NEW-CLOUD-CX-SELECTED-EMISSION-DEFECT-UNREACHED — no browser run has reached the window of the selected-emission defect, so the repair rests on spec mutants — **OPEN** (measurement owed; Batch 1682 landed with this stated)
+
+With reconstruction on, the half-resolution march also emits cloud depth from its own variant. The repair requests that emitting pipeline with the
+selected recipe (`selectedDefinesHi: cache.selectedMarchDefinesHi`) and, in the same frames, the emitting pipeline of the recipe the ladder is
+climbing to, whose result is never bound or stored (`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:5305-5320`). The
+Edge leg 2 read the timeline (`E-RECON-timeline`, reuse off) coherent on both arms: 1,319 of 1,319 emitted frames on the patched tip and 1,296 of
+1,296 on main, so the run did not reach the defect window and C1 is not called measured; the one visible arm difference is main's single
+incoherent emit REQUEST (row 108, `rgba16float:197392` while `66304` was selected), absent on the tip (the leg's figures, verified by Dimrost
+against the kit reports; not re-run). The cell's pass rule records coherence and does not force the window
+(`lib/landing-cell-table.mjs:693-703`; the readers `coherentEmitted` and `incoherentCount` at
+`lib/cloud-reconstruction-timeline.mjs:377-414` and `:495-496`). Batch 1682's message: "a browser has not shown the selected-emission defect
+itself (main's runs read coherent too, so that repair rests on the spec mutants)". **Closes when:** a page forces the defect window (a ladder
+that climbs while a cold full-quality emitting variant compiles) and reads incoherent on main and coherent on the tip, or the claim stays
+recorded as resting on the spec mutants. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F2 (lines 36-37), table row C1 (line 12).
+
+### NEW-BUILD-NOT-REPRODUCIBLE — two clean builds of one source are not byte-identical — **OPEN** (measured once, by the Edge leg; cause not examined; the trees were removed before a second reading)
+
+Edge leg 2 built the patched source twice, clean each time (TIP and TIP-B): the served `index.js` has the same 526,843 lines in both and
+409,422 changed lines in a diff, the sorted line sets differ (so it is not a pure reordering), the `Cesium.js` md5 differs
+(`03b818e620b8123586f6ce1d0040fe07` against `317f8693458f277fd7373c1e7773269c`) and the `index.js` sha256 differs (`586a77e0...d025` against
+`f5050d08...7a0b`); the first leg's tree, with equal engine and widgets sources on an older main, builds a third bundle. The pixels of the
+two builds were equal on the WebGL cell that compared them (`E-D-HDR`, 0 changed pixels), so the kit's identity checks are not affected; byte
+equality of two builds cannot be used as an identity proof. The verifier recomputed the base tree's hash and could not recompute the two
+patched ones, the trees having been removed in cleanup (Dimrost D5). Not re-measured by this round (no build). **Closes when:** a build
+repeated on one tree is diffed by a script that names which classes of bytes differ (identifiers, ordering, embedded hashes) and the cause is
+removed or recorded as expected. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F4 (lines 39-40) and
+`EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:158` and `:190-191`; `VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:13` and `:40`.
+
+### DX-KIT-MERGE-REPORTS-CHAIN-DUPLICATES-RUNS — an interleaved-arms chain that merges every earlier report, merged ones included, counts runs more than once — **OPEN** (kit sheet text and kit merge; found in the leg-2 `E-D` WebGL row)
+
+The sheet of the Edge pieces writes the interleaved row as `B1: --merge-reports <B0>`, `A1: --merge-reports <A0> --base-report <B1>`, "...
+to B4 and A4, each B merging every earlier B report and each A every earlier A report"
+(`lanes-2026-11-13/lanes/cesium-lane-ascar-20261113/EDGE_SHEET_CX-EDGE-PIECES.md:125-133`, line 132). A merged report holds every merged run,
+so B2 merging B0 and the merged B1 holds B0 twice: the runs per invocation are 1, 2, 4, 8 and 16 for B0 to B4, which is what the executor
+found (A4 and B4 each held 16 runs for 5 invocations). The verdict was unaffected (the floors are maxima, and the distinct captures were
+tabulated by hand from `pair-matrix.json`). At the tip `mergeLandingReports` concatenates the pages of every report listed and offsets the
+run numbers (`Tools/visual-regression/lib/metrics/merge-landing-reports.mjs:292-307`; `runsOf` at `:214-228` fixes only the numbering of a
+merged report merged again), and checks the tree identity, windows, perf and pipeline waits but not that a listed report was itself merged
+from another listed one; the probe's own header shows only the first step, B1 merging the plain B0 (`probe-landing-cells.mjs:92-96`).
+The Tumhalad leg avoided it by a brief that forbids the chain (`EDGE_BRIEF_TUMHALAD_CX-CLOUD-3.md:52-54`). **Closes when:** the sheet says
+that each merge names plain reports, and `mergeLandingReports` refuses a set in which a merged report's `mergedFrom` overlaps another
+listed report, with a spec case. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F5 (line 41) and
+`EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:169-171`.
+
+### DX-KIT-CX-EDGE-PIECES-SHEET-FIELD-NAMES — the sheet of the Edge pieces names two record fields the kit's records do not carry — **OPEN** (kit sheet text; found by the leg-2 executor)
+
+The sheet reads `stage.dials.cloudCoverage` `{requested, observed, applied: true}` for the zero-coverage pages (line 42) and `skyCube`
+(`settled`, per-face sha256) for the sky-cube pages (line 69) (`lanes-2026-11-13/lanes/cesium-lane-ascar-20261113/EDGE_SHEET_CX-EDGE-PIECES.md`).
+At the tip neither exists: every `cloud*` dial goes to the cloud probe harness and its round trip is recorded under the stage's `cloud`
+truth, not under `stage.dials` (`Tools/visual-regression/lib/landing-cell-stage.mjs:30-36`, `:822-842`), and the sky-cube read returns
+`{available: true, format, size, mipLevels, frames, faces}` or `{available: false, reason}` (`lib/sky-cubemap-steps.mjs:149-150`, `:300`): the
+settling is a gate on `available`, not a field. The executor read the coverage the page set from `stage.cloud.truth.config.cloudCoverage` (0,
+1e-30 and -0.5 on both arms) and judged applied from `notRun` null, the page's `:stage` verdict and `stage.notApplied []`. **Closes when:**
+the sheet names the fields the records carry (or the records carry the named ones), and the landing-cell spec pins the record shape of a
+zero-coverage page. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F6 (lines 42-43); `TABLE_S1.md:25`;
+`VERIFY_DIMROST_CX-CLOUD-EDGE-2.md` D2 (line 46).
+
+### NEW-CLOUD-CX-TWO-VIEWS-NO-RIG — no kit rig drives two views on one context with reconstruction on, so row C4 of the Codex cloud sheet has never run — **OPEN** (kit rig owed; Batch 1682 landed with this stated)
+
+The sheet's row C4 asks for one half-resolution and one full-resolution view on one context, reconstruction on, reading per view and per frame
+the coherence of the emit request and the count of mask and shadow pipeline creations
+(`lanes-2026-11-13/lanes/cesium-lane-ascar-20261113/EDGE_SHEET_CX-CLOUD.md:42`; the new-piece list names "a two-views-on-one-context rig (C4)" at
+line 51). At the tip no rig or cell does it: the only multi-view probe, `probe-c12-29-s5-multiview.mjs`, certifies the logical-View and stereo
+policy and its files hold no cloud reference (a search for `cloud` finds none in it or in `lib/c12-29-s5-multiview-gate.mjs`). Batch 1682's
+message: "two views on one context has no rig yet". **Closes when:** a rig drives the two views, with the per-view coherence read and the
+rebuild count recorded, and a negative control that makes the second view use the first view's selection reads red. **Source:** lane Ascar's
+`EDGE_SHEET_CX-CLOUD.md` row C4 (line 42) and section D item 5 (line 51).
+
+### DX-KIT-CONTENTION-GUARD-FOUR-CORE-MACHINE — on this four-core machine the kit's contention guard reads a lone page near its threshold, so a start-up measurement needs a window with nothing else running, which the one heavy slot does not provide — **OPEN** (a ruling request, not a work queue: charter section 1.1; the guard is never loosened to fit)
+
+The guard reads `unmeasured-contended` when any run's mean machine CPU is above 60 %, when the two arms' means differ by more than 20 points,
+or when a run holds 10 consecutive 1 Hz samples above 60 % (`Tools/visual-regression/lib/metrics/perf-band.mjs:82-91`, the clauses
+described at `:50-70`). The machine has 4 cores and 8 threads, and a clear page reads 44 to 52 % CPU by itself (the seat's measurement,
+`SEAT_RECORD_2026-11-13.md:197`; the clear pairs of the cloud batch's leg 3 read 44.2 to 52.6 % mean CPU, `EDGE_RECEIPT_TUMHALAD_CX-CLOUD-3.md:117-124`),
+so anything else running tips it. The heavy slot orders the builds and captures of the lanes but does not keep other work off the machine:
+across the cloud batch's legs 3 and 3B, counted by this round from the two receipts, 5 of the 10 pair takes read `contended` (leg 3 pairs 0
+and 4 and the repeat of pair 0; leg 3B takes 2 and 3 of pair 0, with mean CPU 81.4 / 73.0 % and 82.7 / 75.8 %), and the leg-3B executor's
+own pre-run CPU gate (every 20 s sample above 30 %) ran out its budget each time and ran the take anyway
+(`EDGE_RECEIPT_RAUROS_CX-CLOUD-3B.md:40-48`). The brief of this batch counted twelve pairs; the receipts give ten. The warm-up before a
+run's first page (`lib/cpu-warm-up.mjs`) waits for a quiet stretch and then times out and proceeds, by design. **Closes when:** the
+maintainer or the seat rules either a quiet-window protocol (no other agent works while a start-up row runs, the slot extended to say so)
+or a threshold that is justified for this machine, registered before the run; no measured red is de-scored in the meantime. **Source:**
+`SEAT_RECORD_2026-11-13.md:197`; the two receipts under `lanes-2026-11-13/edge/cx-cloud-leg3/lane-out/`.
+
+### DX-SERVER-LOOPBACK-IPV6-ONLY-PORT-CHECKS — `server.js` listens on `localhost`, which resolves to `[::1]` here, and no kit piece checks a port on both loopback families — **OPEN** (small tooling; the earlier executor note of `DEFERRED_WORK.md` "Executor note (no row)" for KIT9 Phase 1 is reopened by a second sighting)
+
+`server.js` listens on the name `localhost` unless `--public` (`server.js:631-634`; the Sandcastle mirror at `:676-679`), and on this machine
+Node v26.13.1 resolves it to `::1` first: `dns.lookup("localhost", { all: true })` returns `::1` (family 6) then `127.0.0.1` (measured by this
+round), and the seat's record says the server listens on `[::1]` only, so a port check against `127.0.0.1` reads a live port as free
+(`SEAT_RECORD_2026-11-13.md:188`). The rule is written (`ORCHESTRATION_HANDBOOK.md:359`: "use `localhost`, never `127.0.0.1`"), and an
+earlier note decided on that ground that no row was needed because no kit piece performs the failing check; the check was nevertheless made
+again. The repository holds no port-check helper (a search of `Tools` and `scripts` for `net.connect`, `createConnection` and `EADDRINUSE`
+finds none outside specs); executors write their own, and the leg-3B executor's `_executor3b/portcheck.mjs` tries both families
+(`lanes-2026-11-13/edge/cx-cloud-leg3/lane-out/_executor3b/portcheck.mjs`). This round did not find which check the seat's note refers to.
+**Closes when:** a kit piece checks a port on both loopback families and the briefs' port preflight names it, or the server listens on
+both families. **Source:** `SEAT_RECORD_2026-11-13.md:188`; `DEFERRED_WORK.md:35033` (the executor note under the KIT9 Phase 1 record, "binds IPv6
+loopback only").
+
+### DX-LANDING-PROBE-EDGE-SLOT-LOCK-IN-REPOSITORY-ROOT — the landing probe writes its Edge-slot lock into the `--repository-root` tree it is pointed at — **OPEN** (probe-kit tooling; the seat's find of 2026-11-14)
+
+The probe runtime, which the landing probe runs on, puts the lock at `<repositoryRoot>/Tools/visual-regression/output/.edge-slot.lock`
+(`Tools/visual-regression/lib/probe-runtime.mjs:860-863` and `:900`; the capture descriptor does the same at `lib/capture-descriptor.mjs:300-306`; the default path constant is
+`lib/probe-edge-slot.mjs:34`), where `repositoryRoot` is the probe's `--repository-root` or else the checkout that holds the kit (`lib/probe-output-location.mjs:48-49`). A probe pointed at another
+tree (an arm built under the lane's temp root and served for the Edge job) therefore writes the lock into that tree, and two trees take
+two locks, so no lock is shared between them; the seat's record lists it among the kit and protocol rows
+(`SEAT_RECORD_2026-11-13.md:188`). Read at the tip; the stale-lock case is another row (`DX-104-F-SLOT`, `DEFERRED_WORK.md:23116`). **Closes
+when:** the lock path is one per machine (for example under the lane temp root) or the probe refuses a `--repository-root` that is not the
+checkout it runs from, with a spec case. **Source:** `SEAT_RECORD_2026-11-13.md:188`.
+
+### DX-EDGE-JOB-BUILD-ROW-REWRITES-SERVED-TREE — a row that builds (`gulp test` without `--production`) rewrites the `Build/` of the tree it runs in, so an Edge job that serves that tree to other legs loses their rows — **OPEN** (job design; the seat's own defect of the water Edge job, first sitting)
+
+Without `--production` and without `--release`, `gulp test` runs the lane's full build before Karma (`gulpfile.js:990-993`, `await plan.full()`),
+and the build rewrites `Build/` and the freshness records of the tree it runs in. The water Edge job shared one AFTER tree among three legs;
+leg 3's row K ran `gulp test` without `--production` and rebuilt that tree's `Build/` at 09:39 to 09:40 (`Cesium.js` md5 `43e9132e...` to
+`7b65a07d...`, 0 source files changed, each bundle 61 bytes shorter); legs 1 and 2 stopped as their brief said, rows L1 to L5 and every leg-3
+capture are on the first manifest and L6, L7 and L8 on the rebuilt bytes (`SEAT_RECORD_2026-11-13.md:185`). The seat's rule from then on: a row
+that builds gets a tree of its own, and nobody builds in a served tree; nothing in the kit enforces it, and DX-115 (`DEFERRED_WORK.md:30750`)
+covers Karma's rebuild of `Build/` under sibling gates as a workflow rule for fix lanes only. **Closes when:** the Edge brief template and the
+job plan carry the rule, and a guard refuses a build command in a tree a job is serving. **Source:** `SEAT_RECORD_2026-11-13.md:185`.
+
+### DX-KIT-ENTRY-GUARD-LINK-PATH — a script whose entry guard compares the typed `process.argv[1]` with `import.meta.url` skips its `main` and exits 0 when run through a junction or a symlink — **OPEN** (probe-kit and tooling scripts; round 4's R6, ruled a row by the seat)
+
+Node loads the main module from its real path, so a guard of the form `pathToFileURL(path.resolve(process.argv[1])).href ===
+import.meta.url` is false when the script is given through a link, and the script exits 0 having run nothing. The form stands at
+the tip in the kit's shared guard `isEntryPoint` (`Tools/visual-regression/lib/probe-runtime.mjs:652-657`), which 58 of the 60
+entries of `edge-job-plan.json` run under, and inline in 8 `Tools` scripts (counted with `git grep` at `db9913d69c`:
+`Tools/build-global-river-binary.mjs:670`, `Tools/landing/post-landing-spine.mjs:304`,
+`Tools/visual-regression/capture-and-diff.mjs:1363`, `Tools/visual-regression/probe-aec-perf.mjs:1932`,
+`Tools/visual-regression/probe-kit-inventory.mjs:946`, `Tools/visual-regression/probe-sky-aureole-anchor.mjs:1591`,
+`Tools/wave-end-gate.mjs:641`, `Tools/wave-end-source-tuple.mjs:372`); round 4 counted 46 more non-spec scripts that resolve
+`process.argv[1]` in other spellings, not audited. Round 4 measured `Tools/wave-end-source-tuple.mjs` through a junction: exit 0
+with empty stdout and stderr, where the direct path gives exit 2; its consumer refuses an identity that is not 64 hex
+(`Tools/wave-end-gate-binding.mjs:361-366`), so the empty tuple is refused, not read clean. Not re-run here. The edge-job runner's
+own guard already compares real paths (`isInvokedAsScript`, `Tools/visual-regression/edge-job-runner.mjs:996-1008`); the case
+where the runner is launched with `--preserve-symlinks-main` is `NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN` above. **Closes when:**
+`isEntryPoint` compares real paths as `isInvokedAsScript` does and the inline guards use it, with a spec that runs a script
+through a junction and a mutant that restores the typed comparison. **Source:** dorlomin harvest `round4/REVIEW_TELPERION_TAUR_P4.md`
+R6 (line 113) and section 4.2 (lines 115-127); the seat's ruling in
+`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/records16-facts.md:963-965` ("first item of kit round 12, together with
+the no-receipt row").
+
+### DX-KIT-LANDING-REPORTS-NO-GPU-ADAPTER — the landing probe's reports and runtime receipts do not record which GPU adapter they were measured on — **OPEN** (probe-kit records; the seat's find of 2026-11-14)
+
+The seat's record lists it among the kit and protocol rows of the water Edge job (`SEAT_RECORD_2026-11-13.md:188`: "the kit
+reports carry no GPU adapter field"). At the tip nothing on the landing probe's path reads the adapter's identity: a search for `adapter` finds only comments in
+(`Tools/visual-regression/probe-landing-cells.mjs`, `lib/probe-runtime*.mjs`, `lib/landing-cell-stage.mjs`,
+`lib/landing-cell-table.mjs`, `lib/landing-verdicts.mjs`), and in code only the device-limits dial, which wraps `GPUAdapter.prototype.requestDevice` to log the requested limits and features, not the adapter (`lib/device-limits-dial.mjs:95-123`, installed through `lib/landing-init-scripts.mjs:26`); the water job's probes (`probe-water-cells.mjs`, `probe-fft-ocean.mjs`, `probe-ssr-water.mjs`, each on `runProbe`) name no adapter at all. So a banked report cannot say which GPU and
+driver produced its figures. Read at the tip; no run. Other kit probes already read it: `probe-cloud-perf.mjs:147-154` puts `context.adapter.info` (vendor, architecture, device, description) in its records, as do `run-performance-campaign.mjs:4390-4399` and `lib/celestial-capture-harness.mjs:455-472`. **Closes when:** the runtime receipt records the adapter's vendor,
+architecture, device and description once per run, and a landing spec pins the field. **Source:** `SEAT_RECORD_2026-11-13.md:188`.
+
+### Notes (rows batch 16a; no new ids)
+
+- **Already on main, not filed again:** `npm run tsc-engine` exits 0 when it skips on a tree that was never built is
+  `DX-TSC-ENGINE-SKIPS-GREEN-ON-AN-UNBUILT-CLONE` (`DEFERRED_WORK.md:24480`, OPEN); read again at the tip, the plan returns `skip` with the message
+  and `runEngineTypeCheck` resolves 0 (`scripts/engineTypeCheck.mjs:74-76`, `:101-105`), and the spec pins that exit as intended
+  (`scripts/__tests__/engineTypeCheck.spec.mjs:135`). A second sighting is the B3 phase A lead on 2026-11-14 ("exits 0 with 'engine type
+  check skipped: tree not built'", `SEAT_RECORD_2026-11-13.md:191-193`); the seat's ruling S-1113-27 supplies the interim evidence
+  (`npx tsc --noEmit -p packages/engine/tsconfig.json`, only TS2307 for generated shader modules acceptable).
+- **Not filed, reviewer's own verdict "nothing to change":** the freshness table's `Record` type turns a missing or unknown body into a
+  `tsc` error but the cast on `Object.fromEntries` (`scripts/build.js:2463-2466`) hides a mapping that drops an entry, which the wiring
+  case catches (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:952`; reviewer Iantiaur, pass 7: T4 `tsc` exit 0, wiring red). The
+  NUL-byte question of round 3 is answered at the tip: `scripts/specBundleFreshness.js` holds no NUL byte (counted by this round). The
+  question whether the builds spec keeps its place in `test-build-infra` is settled: it is in that key (`package.json:165`).
+- **In the sources but outside this batch's list, not filed:** round 4's R3 `DX-EDGE-JOB-NO-RECEIPT-COUNT` (closed in substance by round 5's measured line,
+  `edge-job-runner.mjs:755-761` and `:900`, but the exit code is unchanged: see `NEW-EDGE-JOB-EXIT0-NO-RECEIPT`); the Edge leg's F3 (the PF-3
+  red of `E-RECON-medium`, repaired in round 4 and measured `within` by leg 3B) and F7 (the arms' pixel difference on the reconstruction
+  pages, "not attributed"). Round 4's R6 is filed above as `DX-KIT-ENTRY-GUARD-LINK-PATH`.
