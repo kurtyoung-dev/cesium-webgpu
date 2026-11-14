@@ -41,7 +41,7 @@ import {
 const REGISTRY_CENSUS = {
   // The ten weather-dial rigs joined: three weather (cloud-wx-workers, -interpolation, -vertical) and seven cloud (cloud-wx-populations, cloud-wx-all-dials, the four cloud-eon-*-wx copies, the weather flight rig).
   // Four more: cloud-shadow-noon-cov055, cloud-2d-default and cloud-morph-default (cloud) and sky-cubemap-model (skybox).
-  total: 292,
+  total: 293,
   byTag: {
     "wave-end": 10,
     // The seeded set DX-101 names had 15 cloud rigs. The cloud count reached 17
@@ -64,7 +64,7 @@ const REGISTRY_CENSUS = {
     // -shadow and -lighting, one per cache family) and the flight rig with every
     // family on (cloud-flight-multideck-hdr-1080p-eon), each adding an
     // experimental block and nothing else.
-    cloud: 59,
+    cloud: 60,
     // The polar family's harvest re-declared every scene its probes captured
     // or measured, for the kept probe and the archived ones alike, so a
     // retired probe's scene stays on record: one rig per capture, with the
@@ -315,4 +315,24 @@ test("generateScenesJson(loadRigs()) is byte-identical to scenes.json on disk", 
     onDisk,
     "regenerated scenes.json text must equal the file byte-for-byte",
   );
+});
+
+test("validateRig: `reconstruction` is admitted only as true, and any other value is exactly one named violation", async () => {
+  const rigs = await loadRigs();
+  const base = rigs.find(
+    (rig) => rig.id === "cloud-reconstruction-medium-1080p",
+  );
+  assert.ok(base, "the reconstruction rig is registered");
+  assert.equal(base.reconstruction, true);
+  assert.deepEqual(validateRig(base), [], "declared true is sound");
+  const { reconstruction: _declared, ...without } = base;
+  assert.deepEqual(validateRig(without), [], "absent is sound");
+  const violation = `${base.id}: reconstruction must be true when declared`;
+  for (const value of [false, "yes", 1, null, "true", {}]) {
+    assert.deepEqual(
+      validateRig({ ...base, reconstruction: value }),
+      [violation],
+      `reconstruction: ${JSON.stringify(value)}`,
+    );
+  }
 });

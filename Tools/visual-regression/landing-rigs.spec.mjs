@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { landingStagePayload } from "./lib/landing-cell-stage.mjs";
+import { ProbeRefusal } from "./lib/probe-refusal.mjs";
 import {
   RIG_TAGS,
   generateScenesJson,
@@ -584,4 +585,76 @@ test("R9: the clock-pin setup fails loudly when the clock does not hold or no in
     async () => runClockPin(clockPage(), {}),
     /pinnedTimeIso is required/,
   );
+});
+
+test("reconstruction rig: explicit 1080p MEDIUM profile and manifest stay truthful", () => {
+  const rig = byId("cloud-reconstruction-medium-1080p");
+  assert.deepEqual(validateRig(rig), []);
+  assert.equal(rig.reconstruction, true);
+  assert.deepEqual(rig.viewport, { width: 1920, height: 1080 });
+  assert.equal(rig.dials.cloudVolumetricQuality, "medium");
+  assert.notEqual(rig.dials.cloudVolumetricQuality, "high");
+  const noon = byId("cloud-underside-noon-cov055");
+  assert.equal(rig.dials.cloudWeatherSeed, 1);
+  assert.deepEqual(rig.camera, noon.camera);
+  assert.equal(rig.clock, noon.clock);
+  assert.equal(typeof rig.clock, "string");
+  assert(Number.isFinite(Date.parse(rig.clock)));
+  assert(
+    rig.camera &&
+      ["lon", "lat", "height", "heading", "pitch", "roll"].every((key) =>
+        Number.isFinite(rig.camera[key]),
+      ),
+  );
+  const payload = landingStagePayload(rig);
+  assert.equal(payload.reconstruction, true);
+  assert.equal(payload.volumetric.cloudVolumetricQuality, "medium");
+  assert.equal(payload.volumetric.cloudWeatherSeed, 1);
+  assert.match(rig.description, /MEDIUM 48\/4/);
+  assert.doesNotMatch(rig.description, /HIGH 90\/8/);
+  assert.equal(payload.clock, rig.clock);
+  assert.deepEqual(payload.camera, rig.camera);
+  assert.notEqual(
+    replayKeyFor(rig),
+    replayKeyFor({ ...rig, reconstruction: false }),
+  );
+  assert.notEqual(
+    replayKeyFor(rig),
+    replayKeyFor({ ...rig, viewport: { width: 1280, height: 720 } }),
+  );
+  assert.notEqual(
+    replayKeyFor(rig),
+    replayKeyFor({
+      ...rig,
+      dials: { ...rig.dials, cloudVolumetricQuality: "high" },
+    }),
+  );
+  const { reconstruction: _reconstruction, ...without } = rig;
+  assert.equal(
+    Object.hasOwn(landingStagePayload(without), "reconstruction"),
+    false,
+  );
+});
+
+test("reconstruction rig: the landing payload refuses a `reconstruction` that is not true, before a browser is involved", () => {
+  const rig = byId("cloud-reconstruction-medium-1080p");
+  assert.equal(landingStagePayload(rig).reconstruction, true);
+  for (const value of [false, "yes", 1, null, "true"]) {
+    assert.throws(
+      () => landingStagePayload({ ...rig, reconstruction: value }),
+      (error) => {
+        assert.ok(error instanceof ProbeRefusal, "a ProbeRefusal");
+        assert.equal(error.reason, "rig-dial-unsupported");
+        assert.match(
+          error.message,
+          /^rig cloud-reconstruction-medium-1080p: the landing stage cannot apply reconstruction must be true when declared$/,
+        );
+        assert.deepEqual(error.details.unsupported, [
+          "reconstruction must be true when declared",
+        ]);
+        return true;
+      },
+      `reconstruction: ${JSON.stringify(value)}`,
+    );
+  }
 });

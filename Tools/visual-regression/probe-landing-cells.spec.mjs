@@ -140,8 +140,9 @@ test("P1: planLandingCells plans the full table to one page per renderer a rig d
   // eight pages (two renderers each, the populations cell two WebGPU variant
   // pages), the four E-ON-*-wx cells, E-LL-wx, E-BGL-shadow and E-SKY-cube one
   // WebGPU page each, E-T-wx, E-T-flight-keep and E-T-on-keep two device-loss
-  // pages each, E-CLOUD-2d and E-CLOUD-morph one WebGPU page each.
-  assert.equal(plan.length, 121);
+  // pages each, E-CLOUD-2d and E-CLOUD-morph one WebGPU page each, and
+  // E-RECON-medium (the opt-in cloud reconstruction cell) one WebGPU page.
+  assert.equal(plan.length, 122);
 });
 
 test("P1: E-M-water is a capture cell on both renderers and is not in the default cells", () => {

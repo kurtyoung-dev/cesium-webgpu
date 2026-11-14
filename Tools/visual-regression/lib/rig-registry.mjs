@@ -172,6 +172,11 @@ export function validateRig(rig) {
     }
   }
 
+  need(
+    rig?.reconstruction === undefined || rig.reconstruction === true,
+    "reconstruction must be true when declared",
+  );
+
   const hasPage = Object.hasOwn(rig ?? {}, "page");
   const hasUrl = Object.hasOwn(rig ?? {}, "url");
   need(hasPage !== hasUrl, "declare exactly one of page or url");
@@ -305,6 +310,9 @@ function replaySubset(rig) {
     setupParams: rig.setupParams ?? null,
     viewport: rig.viewport,
     readiness: rig.readiness,
+    ...(rig.reconstruction === undefined
+      ? {}
+      : { reconstruction: rig.reconstruction }),
     // Present only when declared, so a rig without the block keeps its key.
     ...(rig.experimental === undefined
       ? {}

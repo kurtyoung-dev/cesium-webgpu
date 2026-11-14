@@ -71,11 +71,11 @@ import {
   FIRST_FRAME_MAX_RESETTLES,
   guardFirstFrame,
 } from "./lib/first-frame-guard.mjs";
+import { PIPELINE_WAIT_DEFAULTS } from "./lib/landing-cell-stage.mjs";
 import {
-  PIPELINE_WAIT_DEFAULTS,
   pageReadPendingPipelines,
   pageWaitForPendingPipelines,
-} from "./lib/landing-cell-stage.mjs";
+} from "./lib/landing-pipeline-wait.mjs";
 import { brightFraction } from "./lib/metrics/bright-fraction.mjs";
 import { sweepStats } from "./lib/metrics/sweep-stats.mjs";
 import {

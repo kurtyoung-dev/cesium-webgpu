@@ -57,6 +57,24 @@ const LANDING_PAYLOAD_KEYS = [
   "stepDials",
 ];
 
+/**
+ * The landing payload's key set for `rig`: the fixed set, plus `reconstruction`
+ * exactly for a rig that declares `reconstruction: true`.
+ */
+const landingPayloadKeysFor = (rig) =>
+  rig.reconstruction === true
+    ? [...LANDING_PAYLOAD_KEYS, "reconstruction"]
+    : LANDING_PAYLOAD_KEYS;
+
+/** Pin a landing payload's keys (its `experimental` key apart) to the set `rig` allows. */
+function assertLandingPayloadKeys(payload, rig) {
+  assert.deepEqual(
+    Object.keys(payload).filter((key) => key !== "experimental"),
+    landingPayloadKeysFor(rig),
+    rig.id,
+  );
+}
+
 /** A viewer whose cloud collection carries `volumetric`. */
 function cloudViewer(volumetric = new CloudVolumetrics()) {
   const viewer = createFakeViewer();
@@ -505,11 +523,7 @@ test("C3: neither builder emits an experimental key for a registered rig without
     // A rig that declares its own block carries it, and nothing else new.
     if (rig.experimental !== undefined) {
       const landing = landingStagePayload(rig);
-      assert.deepEqual(
-        Object.keys(landing).filter((key) => key !== "experimental"),
-        LANDING_PAYLOAD_KEYS,
-        rig.id,
-      );
+      assertLandingPayloadKeys(landing, rig);
       assert.deepEqual(landing.experimental, rig.experimental, rig.id);
       continue;
     }
@@ -523,11 +537,8 @@ test("C3: neither builder emits an experimental key for a registered rig without
     const landing = attempt(() => landingStagePayload(rig));
     if (landing.payload) {
       landingBuilt += 1;
-      assert.deepEqual(
-        Object.keys(landing.payload),
-        LANDING_PAYLOAD_KEYS,
-        rig.id,
-      );
+      assert.ok(!("experimental" in landing.payload), rig.id);
+      assertLandingPayloadKeys(landing.payload, rig);
     } else {
       assert.doesNotMatch(
         String(landing.error.message),
@@ -543,6 +554,49 @@ test("C3: neither builder emits an experimental key for a registered rig without
   assert.ok(
     landingBuilt > 0,
     "at least one registered rig is stageable by the landing stage",
+  );
+});
+
+test("C3b: the landing payload carries `reconstruction` exactly for a rig that declares it, and the pin rejects every other key set", async () => {
+  const rigs = await loadRigs();
+  const declaring = rigs.filter((rig) => rig.reconstruction !== undefined);
+  assert.ok(declaring.length > 0, "a registered rig declares reconstruction");
+  for (const rig of declaring) {
+    const payload = landingStagePayload(rig);
+    assert.equal(payload.reconstruction, true, rig.id);
+    assertLandingPayloadKeys(payload, rig);
+  }
+  const rig = declaring[0];
+  const payload = landingStagePayload(rig);
+
+  // A rig without the field has no such key.
+  const { reconstruction: _dropped, ...bare } = rig;
+  const barePayload = landingStagePayload(bare);
+  assert.ok(!("reconstruction" in barePayload), "no key without the field");
+  assertLandingPayloadKeys(barePayload, bare);
+
+  // The pin stays exact: each of these key sets is refused.
+  assert.throws(
+    () => assertLandingPayloadKeys({ ...payload, surprise: 1 }, rig),
+    assert.AssertionError,
+    "an unexpected extra key beside reconstruction",
+  );
+  assert.throws(
+    () => assertLandingPayloadKeys({ ...barePayload, surprise: 1 }, bare),
+    assert.AssertionError,
+    "an unexpected extra key on a rig without the field",
+  );
+  assert.throws(
+    () =>
+      assertLandingPayloadKeys({ ...barePayload, reconstruction: true }, bare),
+    assert.AssertionError,
+    "reconstruction on a rig that does not declare it",
+  );
+  const { reconstruction: _absent, ...missing } = payload;
+  assert.throws(
+    () => assertLandingPayloadKeys(missing, rig),
+    assert.AssertionError,
+    "reconstruction missing from a rig that declares it",
   );
 });
 

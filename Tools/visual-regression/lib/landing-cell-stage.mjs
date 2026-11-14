@@ -1,7 +1,7 @@
 /**
  * Stages any landing-cell rig on a CesiumViewer page, on either renderer: its
  * clock, its camera and every dial it declares, each read back.
- * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive); plus the WebGPU globe's fragment-debug mode (its names in lib/globe-fragment-debug-dial.mjs), set before the first frame and read back against the registry.
+ * @purpose Stage piece for the landing program's Edge cells: turns a rig into a JSON-safe payload (Node side, refusing a dial it does not know before a browser is involved), and applies it in the page on WebGL or WebGPU - pinned clock, camera (or the page's own), scene and globe dials (including the globe material), the water flags and the water tier, clouds on or off - reading every dial back as {requested, observed, applied}, with the cloud* dials handed to the cloud probe harness so their round trip stays in one place; plus the ocean's pinned wave epoch, the opt-in FFT ocean (read back by its primitive), the globe's own show flag, the SSR scene switches, the WebGPU render pipeline cache's pending count, and an opt-in wait that drives frames until no pipeline is pending; plus the scene mode (3D, 2D, Columbus view, morphed with duration 0 and read back) and the FFT ocean's inverse-FFT kernel (stockham or pingpong, read back on the facade and on the primitive); plus the WebGPU globe's fragment-debug mode (its names in lib/globe-fragment-debug-dial.mjs), set before the first frame and read back against the registry; plus the opt-in cloud reconstruction step (a rig's top-level `reconstruction: true`, run through lib/landing-cloud-reconstruction.mjs before the pending-pipeline wait).
  * @status ACTIVE
  *
  * WHY A NEW STAGE AND NOT `lib/cloud-rig-stage.mjs`. The landing cells span a
@@ -106,7 +106,18 @@
  * pipelines a pass needs are still compiling, and a capture taken then
  * measures the compile, not the scene. `readPendingPipelines` reads the render
  * pipeline cache's pending count the page already exposes; the opt-in
- * `waitForPendingPipelines` stage option drives frames until it reads 0.
+ * `waitForPendingPipelines` stage option drives frames until it reads 0. The
+ * reader and the wait live in `lib/landing-pipeline-wait.mjs` and are
+ * re-exported here.
+ *
+ * CLOUD RECONSTRUCTION. A rig with the top-level field `reconstruction: true`
+ * has the stage turn cloud temporal reconstruction on through the public
+ * `CesiumDebug.cloudReconstruction(true)` command, in the page
+ * (`lib/landing-cloud-reconstruction.mjs`), and render frozen-clock frames
+ * until the half-resolution march emitted the reconstruction data and the
+ * temporal resolve consumed it; the readiness record is returned as
+ * `staged.reconstruction`. The step runs before the pending-pipeline wait, so
+ * the wait covers the pipelines that turning reconstruction on requests.
  *
  * @module Tools/visual-regression/lib/landing-cell-stage
  */
@@ -114,6 +125,21 @@
 import * as experimentalDial from "./cloud-experimental-dial.mjs";
 import { isGlobeFragmentDebugValue } from "./globe-fragment-debug-dial.mjs";
 import { ProbeRefusal } from "./probe-refusal.mjs";
+import { pageStageCloudReconstruction } from "./landing-cloud-reconstruction.mjs";
+import {
+  pageReadPendingPipelines,
+  pageWaitForPendingPipelines,
+} from "./landing-pipeline-wait.mjs";
+
+// The pending-pipeline wait lives in `lib/landing-pipeline-wait.mjs`. These
+// re-exports serve callers in Node; a module that hands one of the page
+// functions to `page.evaluate` imports it from `lib/landing-pipeline-wait.mjs`
+// (the page-scope analyzer, probe-fleet-contract G4, follows one import hop).
+export {
+  pageReadPendingPipelines,
+  pageWaitForPendingPipelines,
+  readPendingPipelines,
+} from "./landing-pipeline-wait.mjs";
 
 /** Where the page imports the Cesium namespace from. */
 export const LANDING_STAGE_MODULE_URL = "/Build/CesiumUnminified/index.js";
@@ -336,6 +362,9 @@ export function landingStagePayload(rig) {
   ) {
     unsupported.push(`sceneMode=${JSON.stringify(scene.sceneMode)}`);
   }
+  if (rig?.reconstruction !== undefined && rig.reconstruction !== true) {
+    unsupported.push("reconstruction must be true when declared");
+  }
   unsupported.push(...experimentalDial.violations(rig?.experimental));
   if (unsupported.length > 0) {
     throw new ProbeRefusal(
@@ -359,6 +388,7 @@ export function landingStagePayload(rig) {
     cloudsEnabled: cloudsEnabled ?? (hasCloudDials ? true : null),
     needsCloudHarness,
     stepDials,
+    ...(rig?.reconstruction === undefined ? {} : { reconstruction: true }),
     ...(experimental === undefined ? {} : { experimental }),
   };
 }
@@ -806,143 +836,6 @@ export async function stageLandingCellInPage(payload) {
 }
 
 /**
- * PAGE SIDE. The render pipeline cache's pending count, read from the
- * renderer statistics `CesiumDebug.cacheStats()` reports (`pipelineCache`,
- * `detail: pending=`). Read through `context.getRendererStatistics()` rather
- * than `cacheStats()` itself, because `cacheStats()` prints a console table on
- * every call and the probe reads the page console for errors. Self-contained.
- *
- * @returns {{available: boolean, rendererType: string|null,
- *   pending: number|null, created: number|null, reason?: string}}
- */
-export function pageReadPendingPipelines() {
-  const viewer = /** @type {any} */ (globalThis).viewer;
-  const context = viewer && viewer.scene && viewer.scene.context;
-  const rendererType = context
-    ? String(
-        context.rendererType || (context.isWebGPU ? "webgpu" : "webgl"),
-      ).toLowerCase()
-    : null;
-  if (!context || !context.isWebGPU) {
-    return {
-      available: false,
-      rendererType,
-      pending: null,
-      created: null,
-      reason: "the render pipeline cache is WebGPU-only",
-    };
-  }
-  if (typeof context.getRendererStatistics !== "function") {
-    return {
-      available: false,
-      rendererType,
-      pending: null,
-      created: null,
-      reason: "the context exposes no getRendererStatistics",
-    };
-  }
-  try {
-    const cache = context.getRendererStatistics().pipelineCache;
-    const pending =
-      cache && Number.isFinite(cache.pending) ? cache.pending : null;
-    return {
-      available: true,
-      rendererType,
-      pending,
-      created: cache && Number.isFinite(cache.created) ? cache.created : null,
-      ...(pending === null
-        ? { reason: "no pipeline cache statistics yet (no frame rendered)" }
-        : {}),
-    };
-  } catch (error) {
-    return {
-      available: false,
-      rendererType,
-      pending: null,
-      created: null,
-      reason: String(error && error.message ? error.message : error),
-    };
-  }
-}
-
-/**
- * PAGE SIDE (round 5, K5-2). Render frame by frame at the frozen clock until
- * the render pipeline cache has read 0 pending on `settleReads` consecutive
- * reads after at least one frame, or until `deadlineMs` / `maxFrames`. On a
- * page without the cache (WebGL) it renders nothing and says so. Self-contained
- * apart from its argument and the reader passed in as source text.
- *
- * @param {{deadlineMs: number, maxFrames: number, settleReads: number,
- *   readerSource: string}} args
- * @returns {Promise<{requested: true, available: boolean,
- *   pendingAtStart: number|null, pendingAtEnd: number|null,
- *   pendingMax: number|null, createdAtEnd: number|null, framesWaited: number,
- *   waitedMs: number, timedOut: boolean, reason?: string}>}
- */
-export async function pageWaitForPendingPipelines({
-  deadlineMs,
-  maxFrames,
-  settleReads,
-  readerSource,
-}) {
-  // eslint-disable-next-line no-new-func
-  const read = new Function(`return (${readerSource})();`);
-  const viewer = /** @type {any} */ (globalThis).viewer;
-  const started = performance.now();
-  const first = read();
-  const out = {
-    requested: true,
-    available: first.available,
-    pendingAtStart: first.pending,
-    pendingAtEnd: first.pending,
-    pendingMax: first.pending,
-    createdAtEnd: first.created,
-    framesWaited: 0,
-    waitedMs: 0,
-    timedOut: false,
-  };
-  if (!first.available) {
-    out.reason = first.reason;
-    return out;
-  }
-  let zeroReads = 0;
-  for (;;) {
-    const now = read();
-    out.pendingAtEnd = now.pending;
-    out.createdAtEnd = now.created;
-    if (now.pending !== null) {
-      out.pendingMax = Math.max(out.pendingMax ?? 0, now.pending);
-    }
-    zeroReads = now.pending === 0 && out.framesWaited > 0 ? zeroReads + 1 : 0;
-    if (zeroReads >= settleReads) {
-      break;
-    }
-    if (
-      out.framesWaited >= maxFrames ||
-      performance.now() - started >= deadlineMs
-    ) {
-      out.timedOut = true;
-      break;
-    }
-    viewer.scene.render(viewer.clock.currentTime);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    out.framesWaited++;
-  }
-  out.waitedMs = performance.now() - started;
-  return out;
-}
-
-/**
- * NODE SIDE. The pending count now (see {@link pageReadPendingPipelines}).
- *
- * @param {{evaluate: Function}} page
- * @returns {Promise<object>}
- */
-export function readPendingPipelines(page) {
-  return page.evaluate(pageReadPendingPipelines);
-}
-
-/**
  * NODE SIDE. Build the payload and stage it on the page.
  *
  * With `waitForPendingPipelines` (round 5, K5-2; default off), after the dials
@@ -952,6 +845,11 @@ export function readPendingPipelines(page) {
  * The wait renders frames, so a startup timeline read after it starts from a
  * page that has already drawn: compare such a run only with runs that waited
  * too.
+ *
+ * With a rig that declares `reconstruction: true`, the stage first runs the
+ * cloud reconstruction step ({@link pageStageCloudReconstruction}) and returns
+ * its readiness record as `staged.reconstruction`, then the wait above, so the
+ * wait covers the pipelines that turning reconstruction on requests.
  *
  * @param {{page: {evaluate: Function}, rig: object,
  *   waitForPendingPipelines?: boolean|object}} args `waitForPendingPipelines`
@@ -966,6 +864,15 @@ export async function stageLandingCell({
 }) {
   const payload = landingStagePayload(rig);
   const staged = await page.evaluate(stageLandingCellInPage, payload);
+  // Reconstruction first: turning it on requests pipelines, and the wait below
+  // must cover them.
+  if (payload.reconstruction === true) {
+    staged.reconstruction = await page.evaluate(pageStageCloudReconstruction, {
+      deadlineMs: 60_000,
+      maxFrames: 360,
+      settleReads: 3,
+    });
+  }
   let pipelines = null;
   if (waitForPendingPipelines) {
     const options =

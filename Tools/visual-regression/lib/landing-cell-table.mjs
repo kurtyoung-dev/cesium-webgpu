@@ -247,6 +247,19 @@ export const LANDING_CELLS = Object.freeze({
     kind: "capture",
     layoutCensus: CLOUD_LAYOUT_LABELS,
   }),
+  // Not in DEFAULT_CELLS: the 1080p medium cloud scene with temporal
+  // reconstruction turned on by the stage (the rig's top-level
+  // `reconstruction: true`, lib/landing-cloud-reconstruction.mjs), then the
+  // pending-pipeline wait. PASS RULE: the stage's readiness record
+  // `record.stage.reconstruction` reads ready (the half-resolution march
+  // emitted and the temporal resolve consumed, on three fresh reads), the
+  // WebGPU error gate records 0 validation errors and no capture was taken
+  // while pipelines were pending. An Edge cell: it needs a WebGPU browser run.
+  "E-RECON-medium": Object.freeze({
+    rig: "cloud-reconstruction-medium-1080p",
+    kind: "capture",
+    waitPipelines: true,
+  }),
   "E-ON-density": Object.freeze({
     rig: "cloud-eon-density",
     kind: "capture",

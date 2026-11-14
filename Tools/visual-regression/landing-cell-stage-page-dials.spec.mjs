@@ -8,11 +8,17 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as reconstructionStage from "./lib/landing-cell-stage.mjs";
 import { stageLandingCellInPage } from "./lib/landing-cell-stage.mjs";
 import {
   FAKE_CESIUM_URL,
   createFakeViewer,
 } from "./fixtures/landing-cell-stage-support.mjs";
+import {
+  RECON_RUN,
+  reconstructionGuards,
+  reconstructionPage,
+} from "./fixtures/landing-cloud-reconstruction-support.mjs";
 
 test.afterEach(() => {
   delete globalThis.viewer;
@@ -533,4 +539,266 @@ test("S4: (ROUND 3, N-2) terrain dial on a globe that keeps the assignment reads
   assert.equal(staged.dials.terrain.applied, true);
   assert.equal(staged.dials.terrain.observed, "EllipsoidTerrainProvider");
   assert.ok(!staged.notApplied.includes("terrain"));
+});
+
+// Reconstruction staging uses the public Debug API; the scene and statistics are modeled in
+// fixtures/landing-cloud-reconstruction-support.mjs.
+
+async function reconstructionActivation() {
+  try {
+    return (await import("./lib/landing-cloud-reconstruction.mjs"))
+      .pageStageCloudReconstruction;
+  } catch (error) {
+    if (error.code === "ERR_MODULE_NOT_FOUND") return undefined;
+    throw error;
+  }
+}
+
+function reconstructionApplied(result, fixture) {
+  assert.equal(result.requested, true);
+  assert.equal(result.applied, true);
+  assert.equal(result.ready, true);
+  assert.equal(fixture.cache.reconstructionEnabled, true);
+  assert.equal(fixture.cache.attachmentsEnabled, true);
+  assert(
+    fixture.calls.some((args) => args.length === 1 && args[0] === true),
+    "public setter must run",
+  );
+  assert(
+    fixture.calls.some((args) => args.length === 0),
+    "independent public read must run",
+  );
+  assert(
+    fixture.frames.length > 0 && fixture.frames.length <= 8,
+    "bounded natural frames must run",
+  );
+}
+
+test("reconstruction activation: public setter and separate observed read establish applied readiness", async (t) => {
+  const fixture = reconstructionPage(t);
+  const activate = await reconstructionActivation();
+  assert.equal(
+    typeof activate,
+    "function",
+    "baseline lacks the opt-in activation capability",
+  );
+  const result = await activate({
+    deadlineMs: 1000,
+    maxFrames: 8,
+    settleReads: 2,
+  });
+  reconstructionApplied(result, fixture);
+});
+
+test("reconstruction activation: absent Debug, missing cache, false request and unready consumption refuse", async (t) => {
+  const activate = await reconstructionActivation();
+  assert.equal(
+    typeof activate,
+    "function",
+    "baseline lacks the opt-in activation capability",
+  );
+  const notReadyAfter3 = /cloud reconstruction: not ready after 3 renders/;
+  for (const [name, change, matcher] of [
+    [
+      "missing method",
+      () => {
+        globalThis.CesiumDebug = {};
+      },
+      /required WebGPU\/Debug API unavailable/,
+    ],
+    [
+      "missing cache",
+      (f) => {
+        delete f.context._cloudCache;
+      },
+      notReadyAfter3,
+    ],
+    [
+      "setter ignored",
+      () => {
+        globalThis.CesiumDebug.cloudReconstruction = () => ({
+          requested: false,
+        });
+      },
+      /public activation not applied/,
+    ],
+    [
+      "not emitted",
+      (f) => {
+        f.stats.reconstruction.emission.emitted = false;
+      },
+      notReadyAfter3,
+    ],
+    [
+      "not consumed",
+      (f) => {
+        f.stats.reconstruction.emission.consumed = false;
+      },
+      notReadyAfter3,
+    ],
+    [
+      "fresh public read mismatch",
+      () => {
+        const actual = globalThis.CesiumDebug.cloudReconstruction;
+        globalThis.CesiumDebug.cloudReconstruction = (...args) =>
+          args.length ? actual(...args) : { requested: false };
+      },
+      /fresh public readback disagrees/,
+    ],
+    [
+      "wrong primary quality",
+      (f) => {
+        f.stats.raymarch.maxSteps = 90;
+      },
+      notReadyAfter3,
+    ],
+    [
+      "wrong light quality",
+      (f) => {
+        f.stats.raymarch.lightSteps = 8;
+      },
+      notReadyAfter3,
+    ],
+    [
+      "wrong half dimensions",
+      (f) => {
+        f.stats.raymarch.width = 1920;
+      },
+      notReadyAfter3,
+    ],
+  ]) {
+    const f = reconstructionPage(t, change);
+    await assert.rejects(
+      () => activate({ deadlineMs: 1000, maxFrames: 3, settleReads: 1 }),
+      matcher,
+      name,
+    );
+    assert(f.frames.length <= 3, name + " must remain frame bounded");
+  }
+});
+
+test("reconstruction activation: wrapper calls activation only for the explicit rig opt-in", async () => {
+  const calls = [];
+  const staged = { notApplied: [], dials: {} };
+  const applied = { requested: true, applied: true, ready: true };
+  const page = {
+    evaluate: async (fn) => {
+      calls.push(fn.name);
+      if (fn.name === "stageLandingCellInPage") return staged;
+      if (fn.name === "pageStageCloudReconstruction") return applied;
+      throw new Error("unexpected stage call " + fn.name);
+    },
+  };
+  const rig = {
+    id: "reconstruction-opt-in",
+    camera: null,
+    clock: null,
+    dials: {},
+  };
+  const absent = await reconstructionStage.stageLandingCell({ page, rig });
+  assert.deepEqual(calls, ["stageLandingCellInPage"]);
+  assert.equal(Object.hasOwn(absent.staged, "reconstruction"), false);
+  calls.length = 0;
+  const opted = await reconstructionStage.stageLandingCell({
+    page,
+    rig: { ...rig, reconstruction: true },
+  });
+  assert.deepEqual(calls, [
+    "stageLandingCellInPage",
+    "pageStageCloudReconstruction",
+  ]);
+  assert.deepEqual(opted.staged.reconstruction, applied);
+});
+
+// -----------------------------------------------------------------------------
+// One case per readiness guard of lib/landing-cloud-reconstruction.mjs (Brilthor).
+//
+// Every case varies exactly the field its guard reads, on a page that is READY
+// otherwise, and demands that guard's own message: the unready refusals print the
+// last observed record, so the matcher names the offending value; a stray
+// TypeError matches nothing. Each test opens with a control (the unvaried page
+// resolves under the same run options), so a refusal is the variation's doing.
+// -----------------------------------------------------------------------------
+
+async function reconstructionGuardCases(t, cases) {
+  const activate = await reconstructionActivation();
+  assert.equal(typeof activate, "function", "the activation must exist");
+  await t.test(
+    "control: the unvaried page is ready under the same run options",
+    async (st) => {
+      const fixture = reconstructionPage(st);
+      reconstructionApplied(await activate(RECON_RUN), fixture);
+    },
+  );
+  for (const [name, change, matcher, options = RECON_RUN] of cases) {
+    await t.test(name, async (st) => {
+      reconstructionPage(st, change);
+      await assert.rejects(() => activate(options), matcher, name);
+    });
+  }
+}
+
+for (const guard of Object.values(reconstructionGuards)) {
+  test(`reconstruction guard: ${guard.title}`, async (t) => {
+    await reconstructionGuardCases(t, guard.cases());
+  });
+}
+
+test("reconstruction wrapper: the step runs before the pending-pipeline wait it makes necessary", async () => {
+  const calls = [];
+  const page = {
+    evaluate: async (fn) => {
+      calls.push(fn.name);
+      if (fn.name === "stageLandingCellInPage") {
+        return { notApplied: [], dials: {} };
+      }
+      if (fn.name === "pageStageCloudReconstruction") {
+        return { requested: true, applied: true, ready: true };
+      }
+      if (fn.name === "pageWaitForPendingPipelines") {
+        return { pending: 0, settled: true };
+      }
+      throw new Error("unexpected stage call " + fn.name);
+    },
+  };
+  const rig = {
+    id: "reconstruction-order",
+    camera: null,
+    clock: null,
+    dials: {},
+  };
+  const both = await reconstructionStage.stageLandingCell({
+    page,
+    rig: { ...rig, reconstruction: true },
+    waitForPendingPipelines: true,
+  });
+  const reconstructionAt = calls.indexOf("pageStageCloudReconstruction");
+  const waitAt = calls.indexOf("pageWaitForPendingPipelines");
+  assert.ok(
+    reconstructionAt > 0,
+    "the reconstruction step ran after the stage",
+  );
+  assert.ok(waitAt > 0, "the pending-pipeline wait ran");
+  assert.ok(
+    reconstructionAt < waitAt,
+    `the reconstruction step (call ${reconstructionAt}) must precede the wait (call ${waitAt}): ${calls.join(", ")}`,
+  );
+  assert.deepEqual(calls, [
+    "stageLandingCellInPage",
+    "pageStageCloudReconstruction",
+    "pageWaitForPendingPipelines",
+  ]);
+  assert.equal(both.staged.reconstruction.ready, true);
+  assert.equal(both.pipelines.settled, true);
+  calls.length = 0;
+  const waitOnly = await reconstructionStage.stageLandingCell({
+    page,
+    rig,
+    waitForPendingPipelines: true,
+  });
+  assert.deepEqual(calls, [
+    "stageLandingCellInPage",
+    "pageWaitForPendingPipelines",
+  ]);
+  assert.equal(Object.hasOwn(waitOnly.staged, "reconstruction"), false);
 });

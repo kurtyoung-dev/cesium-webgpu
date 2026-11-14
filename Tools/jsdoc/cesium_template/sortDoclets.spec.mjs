@@ -139,3 +139,26 @@ test("preserves Salty query and object semantics after reconstruction", () => {
   assert.deepEqual(ids(data().get()), ["member", "class"]);
   assert.strictEqual(data({ id: "member" }).get()[0], memberDoclet);
 });
+
+// Guards the CommonJS scope `Tools/package.json` ("type": "commonjs") gives
+// the JSDoc plugin: the repository root is "type": "module", so without that
+// scope the real Node loader treats `cesiumTags.js` and `sortDoclets.js`
+// (which assign `exports` and `module.exports`) as ES modules and `require`
+// of them throws. The vm-wrapped load above bypasses the loader and cannot see
+// that. Signed Legolin.
+test("loads JSDoc plugin and sort helper through the real Node loader (the CommonJS scope of Tools/package.json)", () => {
+  const tags = require("../cesiumTags.js");
+  const loadedSortDoclets = require("./sortDoclets.js");
+
+  assert.equal(typeof tags.defineTags, "function");
+  assert.equal(typeof loadedSortDoclets, "function");
+  assert.equal(typeof loadedSortDoclets.compareLogical, "function");
+  assert.equal(loadedSortDoclets.compareLogical("Thing2", "Thing10"), -1);
+
+  const doclets = [
+    { id: "ten", longname: "Thing10" },
+    { id: "two", longname: "Thing2" },
+  ];
+  assert.strictEqual(loadedSortDoclets(doclets), doclets);
+  assert.deepEqual(ids(doclets), ["two", "ten"]);
+});
