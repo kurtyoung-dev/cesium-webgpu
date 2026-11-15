@@ -262,3 +262,120 @@ most two repair rounds, the identity-only Edge job, a default move landing with 
 ruling `R-2026-11-05-M1` set the order (the context optimisation first, then the Codex and Gemini work); Batch 1668 executed that
 first half. The batches the seat's integration plan derives from this ruling are recorded in `CAMPAIGN_STATE.md` (the W-waves
 block) and `DEFERRED_WORK.md` (section "2026-11-06 — records round 15").
+
+## Maintainer rulings of 2026-11-06, after R-2026-11-06-M1 (R-2026-11-06-M2, -M3)
+
+*(Appended by records round 16, part a.)* Each heading quotes the maintainer verbatim; the paragraph under it is the seat's
+reading. Source for both: the seat's facts file for records round 16,
+`cesium-webgpu-worker-archive/lanes-2026-11-06/landing-logs/records16-facts.md`, section AI for `R-2026-11-06-M2` (the
+maintainer's words, the seat's reading and the seat's own correction of the scope) and section AR for `R-2026-11-06-M3` (the
+maintainer's words and the seat's reading). Before these entries a search for the ids in the clone at `f482074496`
+(`grep -rn "R-2026-11-0[68]-M[2-5]\|R-2026-11-1[234]-M" migration_doc CLAUDE.md .claude`) printed nothing (exit 1), so neither
+id appeared in this file, under `migration_doc`, in `CLAUDE.md` or under `.claude`. Two parts of the paragraph under `R-2026-11-06-M2` are this record's, not the seat's reading: its first sentence, written from the seat's report that section AI records, and the words that introduce the seat's correction. Both entries are decisions for that day, not standing rules: `R-2026-11-06-M2` is a go-ahead for one retirement, of the 21 clones its reading describes, after that night's pushes, and `R-2026-11-06-M3` lifts quiet hours for Friday 2026-11-06 only, its point (2) answering that day's low usage.
+
+### R-2026-11-06-M2 (maintainer, 2026-11-06 about 14:57 EST, quoted, on retiring the Gemini water delivery clones): "Yup we can plan to run the cleanup after we commit and push once quiet hours end"
+
+Seat reading: this answers the seat's report on retiring the 23 Gemini water delivery clones; the report's table of clones gave them as consolidated in the water batch's source patch, put the saving at roughly 55 GB and called the retirement destructive. A go-ahead for the retirement the seat proposed, to run AFTER tonight's commits and pushes (quiet hours end 19:00 ET), by the destructive protocol: harvest first, verify the harvest, a positive list read back from a file, a protected set, links unlinked without following, report then go. The seat's own correction of the scope, found at 15:01 while planning: The table's claim is false for two of the 23: `cesium-lane-water-w6b-20261029` and `-w6c-20261029` hold waves that are NOT in the water batch; their re-delivery is the held clone `vinyamar` (decision M-2). The integration plan (`INTEGRATION_PLAN.md` rows 70-72) says: the 13 wave clones are "superseded by Wave 6.5 (w1a-w6a) or held (w6b, w6c)", retire after the water batch (w6b, w6c after M-2), and `cesium-gemini-base-20261031` after M-2. So the approved scope shrinks to 21: the 11 superseded wave originals and the 10 delivery clones of 11-01. The two wave clones, `vinyamar` and the base clone are EXCLUDED and protected. The maintainer is told in the same reply. Not covered by the go-ahead: today's finished lane clones (their work lands tonight or is banked) and the four other older clones. Proposed separately.
+
+### R-2026-11-06-M3 (maintainer, 2026-11-06 17:24 EST, quoted, on lifting quiet hours for that Friday and a plan for the hand-over to Cline): "Okay lets lift quiet hours, it is past 5pm on a Friday. I am greenlighting lifting quiet hours which should override any restrictions. Also we are running low on usage. Please create a plan on how to land the rest of the outstanding tech so that I can have Cline + API tokens handle the rest"
+
+Seat reading: (1) The lift is for Friday 2026-11-06 only. Mechanics as on 09-11, 09-18 and 10-09: the tracked pre-push guard has no bypass and refuses in-window pushes and in-window commit dates, so the landings run now as LOCAL commits (`QUIET_HOURS_LIFTED=1 SKIP_PUSH=1`), and after 19:00 `redate-unpushed.sh --push` re-creates them tree-identical with a later date and pushes through the guard. Skipping the hook (`--no-verify`) needs the maintainer to say so in so many words; the seat reported this and did not infer it from "override any restrictions". (2) Usage is low: no new fan-outs; lanes are asked to finish the item in hand and hand back; running reviews finish.
+
+## Maintainer rulings of 2026-11-08 (R-2026-11-08-M1 … -M5)
+
+*(Appended by records round 16, part a.)* Source for all five: the seat's record of that day,
+`cesium-webgpu-worker-archive/lanes-2026-11-08/SEAT_RECORD_2026-11-08.md`, lines 3 to 11, which introduces them as
+"Maintainer rulings today (verbatim intent, in order)". `R-2026-11-08-M1` is quoted: its heading carries the maintainer's
+words. `R-2026-11-08-M2` is not quoted apart from one fragment, which the source puts in quotation marks inside the seat's
+sentence. `R-2026-11-08-M3`, `-M4` and `-M5` are not quoted: the source kept only the seat's sentence, so their headings say
+"recorded by the seat of that day, not quoted" and give that sentence without quotation marks. The source marks `R-2026-11-08-M5`
+as "(standing)" and gives no such mark to the other four.
+Before these entries the search named in the section above printed nothing, and
+a second search (`grep -rn "R-2026-11-08-M" migration_doc CLAUDE.md .claude`) printed nothing either (exit 1). What the other four are: `R-2026-11-08-M1` records the holder of the seat from that day (until `R-2026-11-12-M1`) and `R-2026-11-08-M3` the seat's taking over of the Gemini water stack from that day, neither of them a rule; `R-2026-11-08-M2` approves the transcript archaeology the seat dispatched that day (the source's dispatch table), and the fragment's "today" is 2026-11-08; `R-2026-11-08-M4` is a finding about one repository and names no end.
+
+### R-2026-11-08-M1 (maintainer, 2026-11-08 10:20 EST, quoted, on the seat): "The Seat is free. You can take it."
+
+Seat reading: Cline/Fable holds the seat for cesium-webgpu. This is the holder of the seat as recorded on 2026-11-08; `R-2026-11-12-M1` below records that Claude Fable 5.2 holds the seat again.
+
+### R-2026-11-08-M2 (maintainer, 2026-11-08, recorded by the seat of that day, not quoted apart from the fragment in quotation marks, on the Antigravity conversation databases): Reading the Antigravity conversation DBs (copies) for transcript archaeology is approved ("safe to assume if the date of the last edit is today").
+
+Seat reading: the source's sentence is the whole record of this ruling: an approval to read copies of the Antigravity conversation databases for transcript archaeology, with the fragment in quotation marks as the only words kept.
+
+### R-2026-11-08-M3 (maintainer, 2026-11-08, recorded by the seat of that day, not quoted, on the Gemini water stack): The seat takes over the Gemini water stack (waves 7A–13); Argon is out of quota until 2026-11-14 07:28Z.
+
+Seat reading: the seat of that day takes over the Gemini water stack (waves 7A–13); the source names Argon's quota date, 2026-11-14 07:28Z, in the same sentence and gives no end to the takeover.
+
+### R-2026-11-08-M4 (maintainer, 2026-11-08, recorded by the seat of that day, not quoted, on the licence of the Nightscape repository): `WeebLabs/Nightscape` is not MIT — inspiration only; distil into our own code.
+
+Seat reading: the source adds this note on what the seat fetched: (Fetched: the repo has no LICENSE file; README credits Three.js MIT and a NASA public-domain moon map; the code itself is all-rights-reserved.)
+
+### R-2026-11-08-M5 (maintainer, 2026-11-08, recorded by the seat of that day, not quoted, marked standing in the source, on performance and scale): all tech must work streaming at global scale and load fast; async preferred; look for WASM / shader / WebGPU-compute candidates to increase performance.
+
+Seat reading: the source marks this ruling standing and states it for all tech, with no case or end date.
+
+## Maintainer rulings of 2026-11-12 (R-2026-11-12-M1 … -M3)
+
+*(Appended by records round 16, part a.)* Each heading quotes the maintainer verbatim; where the source keeps a seat reading,
+the paragraph under it is that reading. Source for all three: the seat's record of 2026-11-12 and 2026-11-13,
+`cesium-webgpu-worker-archive/lanes-2026-11-13/SEAT_RECORD_2026-11-13.md`, section "Maintainer rulings", whose heading reads
+"verbatim, in order; ids proposed by the seat, to be entered by records round 16". All three are quoted. The source gives 01:28
+for the first and only "Thu" for the other two, and says its times are EST. The source keeps a reading for `R-2026-11-12-M1`
+only; the paragraphs under the other two are sentences of this record, written from the source's line alone. None of the three is marked standing in the source: `R-2026-11-12-M1` names the holder of the seat from that day and describes the three tiers, and the maintainer may still hand the seat to another LLM (`R-2026-10-30-M3`); `R-2026-11-12-M2` asks for one restoration of the memory, which the same source records as done that day (14 index lines); `R-2026-11-12-M3` names no day or case. Before these
+entries the search named in the first section above printed nothing.
+
+### R-2026-11-12-M1 (maintainer, 2026-11-12 01:28 EST, quoted, on the seat and the tiered orchestration): "You Claude are usually the main seat and incharge of landing everything to git." and "We also run a tiered Orchestration system so that you Fable 5.2 can focus on high level architecture, final reviews, and git landings. The 2nd Tier is Opus 5.5 that handles major reviews, complex work, feature architecture, and gated browser testing in Edge, Tier 3 is Sonnet 5.5 and is the work horse for doing normal work, quick testing, and quick self reviews."
+
+Seat reading: Claude Fable 5.2 holds the seat again (the 2026-11-08 Cline seat ended when API credit ran out). Gated Edge legs run on Opus (the 2026-11-08 record had reserved a Sonnet Edge executor).
+
+### R-2026-11-12-M2 (maintainer, 2026-11-12, quoted, on restoring memory): "Can we restore some of the memory where it makes sense and is useful? There are likely some rules in there including to name all workers after Tolkien characters"
+
+Seat reading: the source records this request as a ruling and keeps no reading of it; it asks that some of the memory be restored where that makes sense and is useful, and names the rule to name all workers after Tolkien characters as likely to be among the rules in it.
+
+### R-2026-11-12-M3 (maintainer, 2026-11-12, quoted, on keeping context light): "We also want to keep our context usage for memory, rules, and skills light so make sure nothing is bloated and everything is useful"
+
+Seat reading: the source records this as a ruling and keeps no reading of it; it asks that the context used for memory, rules and skills stay light, with nothing bloated and everything useful.
+
+## Maintainer ruling of 2026-11-13 (R-2026-11-13-M1)
+
+*(Appended by records round 16, part a.)* The heading quotes the maintainer verbatim; the paragraph under it is the seat's
+reading, copied from the source. Source: the seat's record of 2026-11-12 and 2026-11-13,
+`cesium-webgpu-worker-archive/lanes-2026-11-13/SEAT_RECORD_2026-11-13.md`, section "Maintainer rulings" (its heading: "verbatim,
+in order; ids proposed by the seat, to be entered by records round 16"). Before this entry the search named in the first
+section above printed nothing.
+
+### R-2026-11-13-M1 (maintainer, 2026-11-13 17:20 EST, quoted, on auditing the new Codex work and resuming the landing): "Codex did some more work while we were away again... so lets audit everything, review what is new, make any fixes and then get back to our tiered orchestration landing of tech so we can commit everything."
+
+Seat reading: (1) audit all of Codex's new work independently; (2) fix; (3) resume the 2026-11-06 landing program under the three tiers; it answers the 2026-11-08 open item 3 (taur and the freshness guard may go ahead of the Gemini audit). It changes no rule: quiet hours, the proof bar and the full gate set at landing stand.
+
+## Maintainer rulings of 2026-11-14 (R-2026-11-14-M1 … -M3)
+
+*(Appended by records round 16, part a.)* Sources: for `R-2026-11-14-M1` and `-M2`, the seat's record of 2026-11-12 and
+2026-11-13, `cesium-webgpu-worker-archive/lanes-2026-11-13/SEAT_RECORD_2026-11-13.md`, section "Maintainer rulings" (the
+maintainer's words in quotation marks, each followed by the seat's reading, copied, except that the last sentence under `R-2026-11-14-M1` is this record's and the source's last sentence for `R-2026-11-14-M2`, which names a lane file, is left out; the source's ids are proposals of the seat;
+its times are EST); for `R-2026-11-14-M3`, the water kit lane's ruling file
+`cesium-webgpu-worker-archive/lanes-2026-11-13/lanes/cesium-lane-belegost-20261114/MAINTAINER_RULING_WATER-KIT-R3.md`, with the
+request it answers, `RULING_REQUEST_WATER-KIT-R3.md`, in the same folder. M1 and M2 are quoted. M3 is not the maintainer's
+composition: the seat wrote the questions and the options, the question dialog offered them, and the maintainer chose one option for each of five requests; its heading names
+the five chosen options in quotation marks as the ruling file gives them, and the reading gives each option's description word
+for word. Paths of the form `lanes-...` inside the readings are under `cesium-webgpu-worker-archive/`. None of the three is marked standing in its source. `R-2026-11-14-M1` asks for the details on M-3, which `R-2026-11-14-M2` then decides for B3's part c alone, and the yes of `R-2026-11-14-M1` is for the recheck and clean-up of the clones that were finished when it was given: it is not a standing go-ahead to retire clones, and the seat's record of 2026-11-12 and 2026-11-13 keeps each retirement of a clone the maintainer's to approve (its sections "Snapshot and clones" and "Dispatch (evening)"). `R-2026-11-14-M3` covers the five readings of the water kit and, for RR-2, the ceiling for every identity cell, as its last section says. Before these entries the
+search named in the first section above printed nothing.
+
+### R-2026-11-14-M1 (maintainer, 2026-11-14 10:55 EST, quoted, on the experimental spatial proxy (M-3) and the finished lane clones): "Give me the details on: M-3: whether B3's experimental spatial proxy lands as default-off scaffolding (my recommendation) or is left out. B3 will not land before you answer" and "Then yes recheck the finished clones to confirm they were fully integrated and then clean them up"
+
+Seat reading: (1) M-3 stays open: the details were given (11:00) and the maintainer has not chosen yet. (2) The maintainer's yes to retire the clones a recheck confirms as fully integrated, by the 2026-11-08 procedure (audit, harvest, notes, positive list, dry run, execute). It covers no clone that holds unlanded work, no clone in flight, not the Gemini stack, not `gemini-base`, not Codex's clone. Recheck and retirement: `lanes-2026-11-14/clone-retirement/`. `R-2026-11-14-M2` below records the maintainer's answer to M-3 at 11:33, and the yes in (2) is for the clones that were finished when it was given, at 10:55: it is not a standing go-ahead to retire clones (this section's first paragraph).
+
+### R-2026-11-14-M2 (maintainer, 2026-11-14 11:33 EST, quoted, on M-3, the experimental spatial proxy of B3): "For M-3 - Option A — land it as named default-off scaffolding (my recommendation)."
+
+Seat reading: B3's part c (the experimental spatial proxy and its formed moments) lands with B3 as named default-off scaffolding. Nothing is cut or re-partitioned. Owed with it: the three repairs (B-4, R-29, R-30), the inventory and deferred-work rows, an Edge cell with the proxy on (a kit change), and the measured size it adds to the single-file bundle. Codex's later spatial units (U13, U10) stay held.
+
+### R-2026-11-14-M3 (maintainer, 2026-11-14 21:24 EST, chose the options named here in the question dialog, on the five ruling requests of the water kit): RR-1 "2x floor, as WebGL (Recommended)"; RR-2 "not-repeatable at 1 % (Recommended)"; RR-3 "Wait + refuse black (Recommended)"; RR-4 "NOT RUN + floor row (Recommended)"; RR-5 "Allocation + 86,660 B floor (Recommended)"
+
+Seat reading: the maintainer granted five ruling requests of the water kit by choosing one offered option for each. The maintainer asked the seat at 21:19 to put the five to them "along with some good options and the recommendation", and answered in the question dialog. For each request, what was asked, then the chosen option's description word for word:
+
+- RR-1 asked how the WebGPU identity cell I1 should be judged, when main's build and the water build differed by 1 px against a band of 0 and two captures of the same build also differ by up to 1 px on WebGPU. Chosen: "WebGPU gets the rule WebGL already has: band = twice the wider same-build repeat floor (2 px here); floors of 0 keep the band 0; a pass under a floor above 0 is recorded as passedUnderFloor. I1 then reads 'within'. I also file a row to find where the 1-px repeat noise comes from."
+- RR-2 asked what the WebGPU own-mask identity page L13 should read, when the two builds differ by 500,158 px and the same build differs from itself by about as much (509,841 and 504,248 px); the rule would apply to every identity cell. Chosen: "When twice the same-build floor reaches 1 % of the frame, the cell reads 'not-repeatable': neither pass nor fail, listed on the sheet as unmeasured, with a row to build a rig that makes the page repeat. No cell can then pass under a band wider than 1 % of the frame."
+- RR-3 asked how the probe should treat B5 on main's build, the FFT ocean's off-gate parity, which read 98.4654 FAIL in the third leg from a black capture taken before the ocean's pipelines were ready and reads 0 (PASS) with a wait for them. Chosen: "The probe waits for the pipelines. A black capture of a page that shows the globe refuses the run with exit 3 (capture-black): not scored, must be run again, never a pass. A black frame of the isolated ocean is still scored as the red it is."
+- RR-4 asked what the verdict of L4 on the water build, the dive lamp at 30 m (WebGPU), should read, when 'lamp-stable' read 11.395 FAIL under a camera pan because the metric measured the seabed, not the lamp, and with the seabed eye-locked the lamp's contribution is flat (23.994, range 0.0003). Chosen: "The verdict reads NOT RUN when the lamp-off floor itself moves more than its bound, or the lamp is not drawn. It names the missing piece (a seabed of uniform albedo) as a row and carries the flat eye-locked reading as a reading, not a pass. Both lamp pairs read NOT RUN on the water build until that floor exists."
+- RR-5 asked how PF-4 (GPU memory) on the FFT ocean page, rows B1 and L14, should be judged, when the page holds about 22.5 MB more GPU memory than main against a floor of 40,000 B that also lies under the cell's own same-build spread (up to 86,660 B). Chosen: "Register 22,579,072 B (with its formula) as the ocean's allocation, so the cell measures growth beyond it, and set the floor to the measured same-build spread, 86,660 B, no larger. Two banked residuals (+61,900 and +82,820 B) then read within - that is the de-score - and +123,800 B stays over until the terrain tile set is pinned. The commit message and the feature inventory state the cost."
+
+The source's last section, "What the ruling does NOT cover", copied: It covers these five readings and, for RR-2, the ceiling for every identity cell. It does not cover any other measured red: the L5 region red, the twin group's new red on main's banked frames and every other row keep the reading the sittings measured. A later change that makes any measured red read differently needs its own request.
