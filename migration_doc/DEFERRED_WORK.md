@@ -852,7 +852,7 @@ rather than quietly frozen.
 
 ### DX-96 — `runProbe` crashes instead of refusing when argv parsing fails <!-- source: C13-N01 stage 2 batch 1, lane W2-T2 (Huan), 2026-09-13 -->
 
-**Status:** OPEN — filed, not fixed. `lib/probe-runtime.mjs` is DX-01's file, not this lane's.
+**Status:** CLOSED (Batch 1652, `f52ff6bef5`; recorded by rows batch 16b). At `eaf01cbf7f` `finishRun` returns early when the command line never parsed, prints `REFUSED (<reason>)` and returns the exit code (`Tools/visual-regression/lib/probe-runtime.mjs:1020-1030`), and `parseTimeExitGroup` pins it (`Tools/visual-regression/probe-frame-write.spec.mjs:355-380`: `--port 8080` exits 3 with `REFUSED (port-8080-forbidden)`, no launch); that such a refusal writes no incident file is `DX-KIT-PARSE-TIME-REFUSAL-NO-FILE`. Filed as: OPEN — filed, not fixed. `lib/probe-runtime.mjs` is DX-01's file, not this lane's.
 
 **Measured 2026-09-13 at `ea651de6d8`, with a two-line descriptor and no probe of this lane involved:**
 
@@ -1836,7 +1836,7 @@ preamble rather than left bare. **Second pass, same day (seat direction, Durin/L
 
 **Status:** OPEN (Wave Continuous, Priority P1).
 
-**Delivers:** `ProceduralClouds.wgsl` **3,157** and `WebGPUProceduralCloudRenderer.ts` **5,570** — 3.2× and 5.6× the rule
+**Delivers:** `ProceduralClouds.wgsl` **3,157** and `WebGPUProceduralCloudRenderer.ts` **5,570** — 3.2× and 5.6× the rule (at `eaf01cbf7f`, `wc -l`: 3,188 and 6,999; `Scene/CloudVolumetrics.js`, 1,292, is named by `NEW-CLOUD-W5W6-OVERSIZE-FILES-TOUCHED-UNRECORDED`; rows batch 16b)
 
 **Acceptance:** Recorded in `ES6_MODERNIZATION_STATUS.md`; byte-identical render before/after
 
@@ -31963,7 +31963,7 @@ future unit consumes it, or removes it with its tests. **Source:** the W3 bank's
 The three upsample specs ("Expected 1 to be 2") failed in the first W3 base run only (`75fae8ef`) and passed in the second run
 and at the tip; recorded as a flake to watch, not a red. **Source:** the W3 bank's `cut/APPENDS_BY_BATCH.txt:59-60`.
 
-### DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT — `verify-package-smoke.spec.mjs` is red at the seat, because the seat's npm prints an error object where the spec expects the pack array — **OPEN** (DX row; seat-measured)
+### DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT — `verify-package-smoke.spec.mjs` is red at the seat, because the seat's npm prints an error object where the spec expects the pack array — **CLOSED** (Batch 1679, `150a7f68bc`; recorded by rows batch 16b, see the row's last sentences; before it OPEN: DX row; seat-measured)
 
 `npm run -s test-build-infra` at the clean tip `9ac404eb46` (no patch; the seat worktree; Node 24.22.1) exits 1 with 206 pass and
 5 fail, all five in `Tools/build-infra/verify-package-smoke.spec.mjs`: `TypeError: object is not iterable` at `packedPaths`
@@ -31979,7 +31979,7 @@ ran `test-build-infra` minus this one spec (`runner-minus-known-red.mjs`, seat k
 the gate. **Repair:** derive the npm version and JSON shape, make the spec accept both shapes or skip with the measured reason,
 with an inertness mutant. **Suggested owner:** a bounded Sonnet lane (fix-forward under S18). **Source:** the seat's addendum
 `cesium-webgpu-worker-archive/lanes-2026-10-30/salvage-night/rows-for-records-r2-addendum.md`;
-`salvage-night/landing-logs/baseline-test-build-infra.log`.
+`salvage-night/landing-logs/baseline-test-build-infra.log`. **Closed (rows batch 16b; the seat's runs of 2026-11-14 at `eaf01cbf7f`, Node 26.13.1, npm 12.2.1):** npm 12 prints the pack entries as an object keyed by the package name, not an error object and not the array the spec destructured: a throwaway fixture packed with an absolute path (`npm pack <path> --dry-run --json --ignore-scripts`) exits 0 and prints one top-level key, the package's name, whose value carries `files`. Batch 1679 reads either shape through `packEntryFromJson` (`Tools/build-infra/verify-package-smoke.spec.mjs:80-98`). The spec alone exits 0 with 9 tests passing, and `npm run -s test-build-infra` exits 0 with 305 tests passing and none failing. The `EALLOWGIT` reading above was of a relative path and was never the spec's own call, as the row says.
 
 ### DX-RUNNERS-RUN-LINE-VALIDATION — lane RUN lines are executed item by item, and one carried prose — **OPEN** (DX row, seat kit; seat note B49)
 
@@ -32814,7 +32814,7 @@ recorded. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md` (rules checklist,
 
 ### DX-KIT-LANDING-STAGE-HEADROOM — `lib/landing-cell-stage.mjs` is at 982 lines — **OPEN** (probe kit, small)
 
-Batch 1634's dial took the stage from 930 to 982 lines (`wc -l` at Batch 1636), under the rule with little headroom. **Repair:**
+Batch 1634's dial took the stage from 930 to 982 lines (`wc -l` at Batch 1636; 983 at `eaf01cbf7f`, rows batch 16b), under the rule with little headroom. **Repair:**
 the next dial goes to a companion piece. **Source:** `round3/irimon/LANDING_PACKET_IRIMON.md`; `REVIEW_IRIME_P1.md` (N4).
 
 ### DX-KIT-WATER-BOOKMARK-RIGS-UNCAPTURED — the water bookmark and offline-bathymetry rigs are captured by no probe — **CLOSED for the kit** (Batch 1638, `b4bf6307cf`; the sheets on Edge are owed)
@@ -35195,7 +35195,7 @@ prints no per-suite counts). This round ran no Karma. The plan critique (B-2) an
 no ledger: wrong, this row recorded it (the lane's premise correction). **Source:** lane Faramir's `_lane-out/LANDING_PACKET_FARAMIR.md`
 ("Premise correction", section 1, "Ledger rows"), `REVIEW_ARWEN_KARMA_P1.md`, `evidence/karma-counts.txt`; the landing log above.
 
-### NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED — no spec reds when a bind-group cache key W4 added is made inert — **OPEN, narrowed** (Batch 1670, `49cd09660d`, closes the main cache's half; the shadow cache's W4 entries, the main cache's `weatherTransition` and `layout` keys and a completeness guard stay open; reviewer Roheryn P2 residual R-P2-1)
+### NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED — no spec reds when a bind-group cache key W4 added is made inert — **CLOSED** (Batch 1673, `dd1eb3d1e8`; recorded by rows batch 16b, see the last paragraph; before it OPEN, narrowed: Batch 1670, `49cd09660d`, closes the main cache's half; the shadow cache's W4 entries, the main cache's `weatherTransition` and `layout` keys and a completeness guard stay open; reviewer Roheryn P2 residual R-P2-1)
 
 The occupancy-view entry W4 added to the main cloud bind-group cache key (`WebGPUProceduralCloudRenderer.ts:1667` at Batch 1664,
 in `getOrCreateCloudMainBindGroup`, `:1603`) and to the shadow cache key (`WebGPUCloudShadowBindGroupCache.ts:68`) is guarded by no
@@ -35217,7 +35217,7 @@ the main cache's half. **Still open:** N1s, the shadow cache's five W4 entries i
 the main cache's `weatherTransition` key (from the W5+W6 wave, Batch 1669) and its `layout` key (reviewer Arwen's mutant K5b, the key made inert: 5 executed, 0 failed, `REVIEW_ARWEN_KARMA_P1.md`); and a completeness guard that turns
 the spec red when a binding is added without a case (the packet's ledger text as fixed after review). **Source:** lane Faramir's
 `_lane-out/LANDING_PACKET_FARAMIR.md` section 1 ("Ledger rows"), `REVIEW_ARWEN_KARMA_P1.md`, `evidence/karma-counts.txt`; the landing
-log `lanes-2026-11-06/landing-logs/land-faramir-karma-1.log`.
+log `lanes-2026-11-06/landing-logs/land-faramir-karma-1.log`. **Closed (Batch 1673, `dd1eb3d1e8`; recorded by rows batch 16b):** the main cache's Karma spec gains "cloud main key guards" (`packages/engine/Specs/Renderer/WebGPU/WebGPUEnvironmentalEffectsBindGroupCacheSpec.js:367`), a case per stored entry field with the `layout` key and the weather-transition pair, and a completeness describe that turns a stored field or an emitted binding with no case red by name (`:646-684`); the shadow cache spec guards every compared input, the W4 entries among them, with the same completeness test (`Tools/visual-regression/webgpu-cloud-shadow-bind-group-cache.spec.mjs:364-406`). There are six W4 shadow entries, not five: `occupancyView`, `occupancyUniformBuffer`, `densityCacheView`, `densityCacheUniform`, `deepShadowView`, `deepShadowUniform` (`packages/engine/Source/Renderer/WebGPU/WebGPUCloudShadowBindGroupCache.ts:16-21`, `:73-78`). The lane's mutants (N1, the inert `layout`, the inert `weatherTransition`, an added unguarded key) turned named tests red (linwe harvest `LANDING_PACKET_ARAGORN.md:210-216`; not re-run). What stays open is `NEW-CLOUD-WEATHER-TRANSITION-PAIR-REPLACE-UNPINNED` and `NEW-CLOUD-BINDGROUP-COMPLETENESS-GUARD-BLIND-SPOTS` (rows batch 16b).
 
 ### NEW-CLOUD-W4-E-ON-CELLS-OWED — the W4 families' on-path is proven in Node; their visual proof on Edge is owed — **OPEN** (visual proof owed; seat ruling on R-1)
 
@@ -35268,7 +35268,7 @@ seat were untouched). **Acceptance:** both controls use a path they create, neve
 
 ### NEW-CLOUD-W4-PROBE-RUNTIME-SIZE — `lib/probe-runtime.mjs` is 1,016 lines after 3592's writer — **OPEN** (DX, file size)
 
-984 lines before Batch 1662, 1,016 at Batch 1664 (`wc -l`), over the ~1,000-line decomposition rule. **Owner:** the kit.
+984 lines before Batch 1662, 1,016 at Batch 1664 (`wc -l`), over the ~1,000-line decomposition rule. At `eaf01cbf7f` (after Batch 1677) it is 1,140 lines (`wc -l`; rows batch 16b). **Owner:** the kit.
 **Source:** `cut/APPENDS_BY_BATCH.txt`; the file at Batch 1664.
 
 ### NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE — the wide weather-map-ON frame takes one of several byte-identical states per invocation, on the unchanged base as on the W4 tips — **OPEN** (measured, the base's own; no W4 batch named)
@@ -35977,7 +35977,7 @@ still exits 0 with `0 of N ... none`. Measured causes (round 4, on copies): a pr
 `verdict-fail` with red verdict ids `none` (two crashing fake probes under `[0,1]` gave exit 0 and `0 of 2`), and
 `NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN` below. **Row 21 of round 4, filed here:** an exit 0 or 1 beside a `-refusal.json` or `-error.json`
 record is read the same way, because the exit is read first and `readEntryReceipts` looks at those files only for the refusal id and the elapsed time
-(`:526-530`, `:548`). The two c11 entries keep a hand check on `<entry>/performance/<name>.json`. **Until it is closed, the executor's hand
+(`:526-530`, `:548`; the elapsed time is read from `runtime ?? incident ?? report` at `:554-557`). The two c11 entries keep a hand check on `<entry>/performance/<name>.json`. **Until it is closed, the executor's hand
 check stands:** (a) every `ok` or `verdict-fail` row of a non-c11 entry shows a report md5 or a receipt `elapsedMs`, not `n/a`; (b) every
 `verdict-fail` row names at least one red verdict id; (c) each c11 entry directory holds its `performance/<name>.json`; (d) no `ok` or
 `verdict-fail` entry directory holds a `*-refusal.json` or `*-error.json`. **Closes when:** for a runtime-resident entry (the `@runtime`
@@ -36158,7 +36158,7 @@ first reads 1248-2397 ms (`logs-r3/check-time-unbuilt-loaded.txt`); round 2 read
 0.33 s. Those are not figures of the tip: rounds 4 to 8 rewrote the module and its groups (the output and worker records, the tooling
 group). **Closes when:** the lane's own script (`node _lane-out/scripts-r3/check-lanes.mjs --time 5` in the linwe harvest) or a successor is
 run on a quiet machine, warm and cold, and the figures are recorded with the date and the tree. **Source:** linwe harvest `ROUND3_LINWE.md`
-("Cost of the check", "New rows") and `HANDBACK_LINWE.md:25`.
+("Cost of the check", "New rows") and `HANDBACK_LINWE.md:25`; the pass-2 figure is `REVIEW_HAMA_FRESHNESS_P2.md:428-429`.
 
 ### DX-FRESHNESS-DOC-HEADERS — the freshness spec's `@purpose` line and one guide sentence still describe the guard before the rewrite — **OPEN** (documentation; the lane's R-9, one half already done)
 
@@ -36235,7 +36235,7 @@ climbing to, whose result is never bound or stored (`packages/engine/Source/Rend
 Edge leg 2 read the timeline (`E-RECON-timeline`, reuse off) coherent on both arms: 1,319 of 1,319 emitted frames on the patched tip and 1,296 of
 1,296 on main, so the run did not reach the defect window and C1 is not called measured; the one visible arm difference is main's single
 incoherent emit REQUEST (row 108, `rgba16float:197392` while `66304` was selected), absent on the tip (the leg's figures, verified by Dimrost
-against the kit reports; not re-run). The cell's pass rule records coherence and does not force the window
+against the kit reports; not re-run; that tip is leg 2's round-3 arm). Leg 3, on the landed round-4 bytes, read exactly one incoherent entry, `rgba16float:197392` while `66304` was selected, on every page-run of both arms (12 of 12), each the emitting key of the variant the same run selects later: no finding (leg-3 folder `lane-out/EDGE_RECEIPT_TUMHALAD_CX-CLOUD-3.md:162-165`; rows batch 16b). The cell's pass rule records coherence and does not force the window
 (`lib/landing-cell-table.mjs:693-703`; the readers `coherentEmitted` and `incoherentCount` at
 `lib/cloud-reconstruction-timeline.mjs:377-414` and `:495-496`). Batch 1682's message: "a browser has not shown the selected-emission defect
 itself (main's runs read coherent too, so that repair rests on the spec mutants)". **Closes when:** a page forces the defect window (a ladder
@@ -36265,7 +36265,7 @@ found (A4 and B4 each held 16 runs for 5 invocations). The verdict was unaffecte
 tabulated by hand from `pair-matrix.json`). At the tip `mergeLandingReports` concatenates the pages of every report listed and offsets the
 run numbers (`Tools/visual-regression/lib/metrics/merge-landing-reports.mjs:292-307`; `runsOf` at `:214-228` fixes only the numbering of a
 merged report merged again), and checks the tree identity, windows, perf and pipeline waits but not that a listed report was itself merged
-from another listed one; the probe's own header shows only the first step, B1 merging the plain B0 (`probe-landing-cells.mjs:92-96`).
+from another listed one; the probe's own header shows only the first step (`probe-landing-cells.mjs:92-96`): its explicit command is A1's, `--merge-reports <A0> --base-report <B1>`, and that B1 merges the plain B0 is implied (rows batch 16b).
 The Tumhalad leg avoided it by a brief that forbids the chain (`EDGE_BRIEF_TUMHALAD_CX-CLOUD-3.md:52-54`). **Closes when:** the sheet says
 that each merge names plain reports, and `mergeLandingReports` refuses a set in which a merged report's `mergedFrom` overlaps another
 listed report, with a spec case. **Source:** leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt` F5 (line 41) and
@@ -36357,7 +36357,7 @@ entries of `edge-job-plan.json` run under, and inline in 8 `Tools` scripts (coun
 `Tools/visual-regression/capture-and-diff.mjs:1363`, `Tools/visual-regression/probe-aec-perf.mjs:1932`,
 `Tools/visual-regression/probe-kit-inventory.mjs:946`, `Tools/visual-regression/probe-sky-aureole-anchor.mjs:1591`,
 `Tools/wave-end-gate.mjs:641`, `Tools/wave-end-source-tuple.mjs:372`); round 4 counted 46 more non-spec scripts that resolve
-`process.argv[1]` in other spellings, not audited. Round 4 measured `Tools/wave-end-source-tuple.mjs` through a junction: exit 0
+`process.argv[1]` in other spellings, not audited (46 is round 4's tree's count; at `eaf01cbf7f` a `git grep -l` for `process.argv[1]` over `Tools` and `scripts`, spec files excluded, lists 70 files, 49 of them with `resolve(process.argv[1])`, the guards above among them; the seat's record gives 61 and 45 at the same tip without naming its scope, `SEAT_RECORD_2026-11-13.md:238`; rows batch 16b). Round 4 measured `Tools/wave-end-source-tuple.mjs` through a junction: exit 0
 with empty stdout and stderr, where the direct path gives exit 2; its consumer refuses an identity that is not 64 hex
 (`Tools/wave-end-gate-binding.mjs:361-366`), so the empty tuple is refused, not read clean. Not re-run here. The edge-job runner's
 own guard already compares real paths (`isInvokedAsScript`, `Tools/visual-regression/edge-job-runner.mjs:996-1008`); the case
@@ -36394,3 +36394,732 @@ architecture, device and description once per run, and a landing spec pins the f
   `edge-job-runner.mjs:755-761` and `:900`, but the exit code is unchanged: see `NEW-EDGE-JOB-EXIT0-NO-RECEIPT`); the Edge leg's F3 (the PF-3
   red of `E-RECON-medium`, repaired in round 4 and measured `within` by leg 3B) and F7 (the arms' pixel difference on the reconstruction
   pages, "not attributed"). Round 4's R6 is filed above as `DX-KIT-ENTRY-GUARD-LINK-PATH`.
+
+## 2026-11-14 — rows batch 16b: follow-up rows of every round of the lanes landed since Batch 1669 (Taur, the freshness guard and the key guards, cx-edge-pieces, the Node 26 gates, main-reds-2, cx-tools, the W5+W6 cloud wave, the Codex cloud batch and its Edge legs)
+
+Rows batch 16b (lead Amonsul; sweepers Nargil, Carndum, Crickhollow and Needlehole; for the seat Gandalf), written and checked at main's tip
+`eaf01cbf7f` (Batch 1683). The seat's ruling S-1113-32 (`lanes-2026-11-13/SEAT_RECORD_2026-11-13.md:248`) makes a lane integrated only when its
+code and every follow-up row of every round's reviews, round files, hand-backs and packets are on main or closed there with a reason. Four
+sweepers read those files of the lanes below and decided every candidate against the tip (the sweeper of review pass 1 added six rows in two sittings, named in the Notes); the lead re-opened every other row filed here at its
+source and at the tip, and one in three of the decisions that file nothing. No build, browser or server was used for this batch, and its only test runs are the seat's for `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT` (the Notes);
+where a figure is a lane's or a reviewer's and was not re-derived, the row says so. A row already on main is named in the Notes, and a fact
+on main that a row shows to be stale is corrected where it stands (the Notes list each correction). Source folders, all under
+`cesium-webgpu-worker-archive/` unless a clone is named: the dorlomin harvest is `lanes-2026-11-14/clone-retirement/cesium-lane-dorlomin-20261113/_lane-out/`
+and the legolas folder `lanes-2026-11-06/kit-strays-legolas/` (Taur, rounds 1 to 5; Batch 1677); the linwe harvest is
+`lanes-2026-11-14/clone-retirement/cesium-lane-linwe-20261106/_lane-out/` (the freshness guard, Batch 1681, and the key guards, Batch 1673);
+the aelinuial, hithlum, orfalch and legolin harvests are the folders of those clones under `lanes-2026-11-14/clone-retirement/` (cx-edge-pieces,
+Batch 1680; the Node 26 gates and the homeless row, Batches 1675 and 1676; main-reds-2, Batch 1679; cx-tools, Batch 1678); the Annatar harvest
+is `lanes-2026-11-14/clone-retirement/cesium-lane-annatar-20261101/_lane-out/` (the W5+W6 cloud wave, Batch 1669); the Ascar folder is
+`lanes-2026-11-14/clone-retirement/cesium-lane-ascar-20261113/_lane-out/` (the Codex cloud batch, Batch 1682); the leg-2 and leg-3 folders are
+`lanes-2026-11-13/edge/cx-cloud-leg2/` and `lanes-2026-11-13/edge/cx-cloud-leg3/`.
+
+### NEW-KIT-FRAME-WRITE-BYPASS — frames written around `lib/probe-frame-write.mjs` are not guarded, so a default run of the cloud, OIT and orbital-ladder probes still replaces banked frames silently — **OPEN** (probe kit; pass-1 review R-4 of the Taur re-base, the lane's own ledger row, never filed)
+
+Taur's shared-root guard lives in one function, `writeFrameFile` (`Tools/visual-regression/lib/probe-frame-write.mjs:138`), and the runtime reaches it only from `captureElement`
+and `bankPngCapture` (`Tools/visual-regression/lib/probe-runtime.mjs:543`, `:616`; a `git grep -l writeFrameFile` over `Tools` finds only the primitive, the runtime and the primitive's
+spec). Writers that write a frame with their own `fs.writeFileSync` stand at the tip: `bankCanvasRead` in `Tools/visual-regression/lib/cloud-rig-stage.mjs` (`:420`, the write at `:451`,
+called at `:518` and `:568`, the frame path of the six cloud probes aerial, ambient, features, phase, special and tod), and those six descriptors keep `outputSubdirectory: ""` (for example `probe-cloud-aerial.mjs:209`; nine more of the sixteen `probe-cloud-*.mjs` descriptors with that value capture through the runtime's guarded `captureElement`), so their
+frames go straight into the shared `Tools/visual-regression/output/` root; `probe-cloud-orbital-ladder.mjs:839` (descriptor `:737`); and the three OIT
+probes (`probe-oit-collection-reachable.mjs:403`, `:436`, descriptor `:494`; `probe-oit-model-reachable.mjs:355`, `:388`, descriptor `:450`;
+`probe-oit-primitive-reachable.mjs:401`, `:436`, descriptor `:496`). A probe that is not on the runtime writes around it too (for example
+`probe-model-scene2d-idl.mjs:235`, a cwd-relative `Tools/visual-regression/output/model-2didl-...png`); that one was read, not classified as a shared-root case.
+A default run of the listed probes therefore still replaces a banked frame; a job through `edge-job-runner.mjs` is safe because the runner always passes `--output`
+(legolas folder, `sources/taur/LANDING_PACKET_TAUR.md:80-86`). The first Edge run measured the guard itself live on the round-1 tree
+(`probe-voxel-pick.mjs`: exit 3 `frame-overwrite-shared-root`, both banked PNGs unchanged; `legolas folder, edge/first-contact/_lane-out/EDGE_RECEIPT_EOWYN_STRAYS.md:34-36`), not these writers.
+**Closes when:** each writer is routed through `writeFrameFile` or `bankPngCapture` (`bankCanvasRead` already holds a liveness record that `bankPngCapture` accepts), or a
+census spec fails on a frame write outside the primitive for a descriptor whose `outputSubdirectory` is `""`. **Source:** dorlomin harvest `round4/REVIEW_BOROMIR_TAUR_P1.md:109-115`;
+legolas folder `sources/taur/LEDGER_TAUR.md:12-19` and `round4/LANDING_PACKET_LEGOLAS.md:124-130`.
+
+### NEW-KIT-FRAME-GUARD-LIFECYCLE-SPEC — the Taur specs pin the shared-root guard, its lift and the receipt timing only for descriptors without `workBudgetMs`, and 50 probes declare it — **OPEN** (probe kit, spec gap; pass-1 review R-5)
+
+`Tools/visual-regression/probe-frame-write.spec.mjs` builds every run from `fakeDescriptor` (`:201-210`) and the file contains no `workBudgetMs` (`grep -c` gives 0). The runtime takes a different path
+for a descriptor that declares one (`lifecycleAdopted = descriptor.workBudgetMs !== undefined`, `Tools/visual-regression/lib/probe-runtime.mjs:756`; the lift of the guard is at `:816`), and 50
+`probe-*.mjs` probes declare `workBudgetMs` at the tip (a `git grep -l` of the glob names 55 files: three are specs, and two only say in a comment that they do not declare it; `probe-voxel-pick.mjs:453` is one that does). So the refusal's route to exit 3 on that path
+(`probeRefusalRecord`, `lib/probe-lifecycle-diagnostics.mjs:289` at the review's base), the lift for `--output`, and the timing fields are pinned there by no Node spec; the one live
+check, the Edge first-contact run, ran `probe-voxel-pick.mjs` on the round-1 tree (`EDGE_RECEIPT_EOWYN_STRAYS.md:34-36`, legolas folder) and is not repeatable by a test run.
+**Closes when:** `probe-frame-write.spec.mjs` gains the lifecycle-path cases (the guard refuses, the lift holds for `--output` only, `startedAt` and `elapsedMs` are present) with an
+inertness mutant for each. **Source:** dorlomin harvest `round4/REVIEW_BOROMIR_TAUR_P1.md:116-120`.
+
+### NEW-C11-HARNESS-OFF-RUNTIME — the two c11 harnesses launch Edge outside `runProbe`, with no Edge slot and no served-build preflight, though the edge-job runner's header says the runtime takes the slot — **OPEN** (probe kit; pass-1 review R-8)
+
+`Tools/visual-regression/probe-c11-13-voxel-inside-camera.mjs:42` and `Tools/visual-regression/probe-c11-90-primitive-restart-split.mjs:47` call `chromium.launch({ channel: "msedge", ... })` themselves; a search of both
+entry scripts and both c11 libraries for `acquireEdgeSlot`, `probe-edge-slot`, `preflight` and `servedBuild` finds no slot or preflight call; the c11-13 library assesses the served build's identity inside its own run (`Tools/visual-regression/lib/c11-13-voxel-inside-camera-probe.mjs:1771-1779`), which is not the runtime's preflight refusal (read; not run). Both entries are in the shipped plan
+(`c11/c11-13`, `c11/c11-90` of `Tools/visual-regression/edge-job-plan.json`). The runner header states "The probe runtime takes the single Edge slot itself (`lib/probe-edge-slot.mjs`)"
+(`Tools/visual-regression/edge-job-runner.mjs:17-18`), which holds for the 58 runtime entries and not for these two. Taur only re-indented the pre-existing launches (review R-8). **Closes when:** the two harnesses run on the
+runtime (slot, preflight, deadline, receipt) or the header and the plan say that they do not, with a spec case for whichever is chosen. **Source:** dorlomin harvest
+`round4/REVIEW_BOROMIR_TAUR_P1.md:127-129`; legolas folder `round4/LANDING_PACKET_LEGOLAS.md:137-139`.
+
+### DX-EDGE-RUNNER-INFRA-IDS-ADDITIONS — the runner's infrastructure-refusal map is a hand list pinned against fixed kit calls, so an id the kit adds is classed a subject refusal and the job carries on — **OPEN** (probe-kit tooling; pass-2 review R-2)
+
+`INFRASTRUCTURE_REFUSAL_CLASSES` is a hand-written map of eight ids (`Tools/visual-regression/edge-job-runner.mjs:107-116`), and `classifyEntry` stops the job only for an id in it (`:589`). The spec pins it
+by driving fixed calls of the kit's decisions (`kitInfrastructureRefusalIds`, `Tools/visual-regression/edge-job-runner.spec.mjs:1151-1186`: `decideServedBuildRefusal`, `decideOriginRefusal`, `decidePortRefusal`,
+`throwIfProbeBaseRefused`, `acquireEdgeSlot`) and requiring set equality (`:1194-1216`). That catches a renamed id and a runner-side drift, but a refusal raised by a new branch, a new decision or a new
+Edge-slot refusal is never driven, so the runner would class it a subject refusal. Read at the tip; no run. **Closes when:** the kit modules export their infrastructure id list (or a census of
+`refusedDecision` / `ProbeRefusal` ids in them) and the runner and the spec read it. **Source:** dorlomin harvest `round4/REVIEW_BOROMIR_TAUR_P2.md:109-112`.
+
+### NEW-EDGE-JOB-RECORD-OVERWRITE — a reused job directory has its `elapsed.json` and a same-family `INDEX.md` replaced by the later job — **OPEN** (probe-kit tooling; pass-2 review R-4)
+
+The runner refuses only an existing ENTRY directory ("a job never writes over an earlier job's receipts", `Tools/visual-regression/edge-job-runner.mjs:419-421`). `runJob` then makes the job directory
+with `recursive: true` and writes `<jobDir>/elapsed.json` without a check (`:803`, the write at `:813-816`), and rewrites `<jobDir>/<family>/INDEX.md` after each entry (`:869-872`). A second job given the same `--job-dir`
+with another `--family` or `--plan` therefore keeps the first job's entry directories but replaces its `elapsed.json` (and, for the same family, its INDEX), so the record no longer lists the earlier job.
+Read at the tip; not run. It is a different defect from `NEW-EDGE-JOB-RECORD-NO-COMPLETION-MARK`. **Closes when:** an existing `elapsed.json` or `INDEX.md` is refused at plan load, or both are written
+exclusively, with a spec case and an inertness mutant. **Source:** dorlomin harvest `round4/REVIEW_BOROMIR_TAUR_P2.md:116-117`.
+
+### NEW-EDGE-JOB-PLAN-REFUSAL-EXITS — every entry of the shipped plan expects `[0,1]`, so a subject refusal (exit 3) in any entry makes the whole job exit 4; whether any entry should plan 3 was never decided — **OPEN** (probe-kit tooling; the seat's question 1 of Taur round 3, ruled to stay a row)
+
+The shipped plan carries exactly `[0,1]` for all 60 entries (counted by this sweep with `node` over `Tools/visual-regression/edge-job-plan.json`), and the runner returns 4 whenever a finished entry's exit lies
+outside its list (`Tools/visual-regression/edge-job-runner.mjs:982`; the clause is pinned by spec). A subject refusal (exit 3: for example a chrome leftover, an unmeasurable renderer, a lost device) is therefore never a planned outcome. The Edge smoke
+met it: a wgs84 entry refused `renderer-unavailable` (subject) and the job ran on and exited 4 (`EDGE_RECEIPT_EOWYN_TAUR4.md:55-56`, legolas folder). The seat ruled the exit-4 reading intended
+(seat ruling 1 of the pass-3 brief, "exit 4 when a finished entry's exit lies outside its plan `expectedExit`", for the reason "a job with a refused entry did not measure everything": dorlomin harvest `round4/REVIEW_ANDURIL_TAUR_P3.md:10-12`, `:75`, `:144`; it answers the lane's question at `ROUND3_GALADHON.md:280-282`, legolas folder; `REVIEW_TELPERION_TAUR_P4.md:108-109`: "stands as the seat ruled it"); what stays open is the per-entry decision. It is not
+`DX-EDGE-JOB-CUSTOM-PLAN-ERROR-EXITS` (which is about 2 and 3 in a custom plan). **Closes when:** each of the 60 entries is judged for whether 3 is a planned outcome and the plan lists it
+where so, or the row is closed with the reason that none should. **Source:** legolas folder `round4/ROUND3_GALADHON.md:213` and `:280-282`; dorlomin harvest `round4/REVIEW_ANDURIL_TAUR_P3.md:116-117`.
+
+### DX-EDGE-JOB-RUNNER-OVER-SIZE — `edge-job-runner.mjs` is 1,012 lines and its spec 2,380; the lane left the spec undivided on the ground that the size rule's text is under `packages/**`, and no source weighs the runner against the rule — **OPEN** (probe-kit tooling, file size)
+
+`wc -l` at the tip: `Tools/visual-regression/edge-job-runner.mjs` 1012 lines and `Tools/visual-regression/edge-job-runner.spec.mjs` 2380 (the lane's account: 2,255 lines for the spec at round 4,
+"not decomposed (a Tools spec; the size rule's text is under packages/**)"). The kit has treated a Tools kit file over about 1,000 lines as over the rule before (`DX-KIT-DECOMPOSE-RUNTIME-WATER`, closed at Batch 1631;
+`DEFERRED_WORK.md:32386`), and the runner grew again with round 5's measured count. Read; no decomposition was tried. **Closes when:** the plan reader, the classification and the index renderer
+are split from the runner, and the spec's groups follow, each with the existing mutants kept. **Source:** dorlomin harvest `round4/ROUND4_ANGAINOR.md:160`.
+
+### DX-KIT-SYMLINK-CASES-UNRUN — the entry-guard cases through a directory symlink and a file symlink, and the source tuple's symlink digest, have no recorded run on a host that allows symlinks — **OPEN** (probe-kit tooling; round 4's G4-5 and the lane's own ledger)
+
+On this Windows host creating a symlink fails with EPERM. `Tools/wave-end-source-tuple.spec.mjs` skips its symlink group there (`:359-383`, the skip at `:372-378`), so the tuple's "a symlink digests as its
+link text" rule has no recorded run. For the runner's entry guard the spec makes one kind of link: `fs.symlinkSync(HERE, link, "junction")` (`Tools/visual-regression/edge-job-runner.spec.mjs:1986`, a junction on Windows and a directory symlink
+elsewhere), and skips visibly when no directory link can be made (`:2012-2024`); no case makes a file symlink to the runner, and a Windows directory symlink is made nowhere (`grep -n "symlink\|junction"` over the spec: `:1965`,
+`:1986`). Round 4's reviewer reasoned that both link kinds exit 2 because both sides go through `fs.realpathSync.native`, and left two commands for a host with the privilege (`REVIEW_TELPERION_TAUR_P4.md:307-313`);
+`DX-KIT-ENTRY-GUARD-LINK-PATH` is the guard row, not this one. Also reasoned only, never measured: a `subst` drive, a UNC share, a real signal to a live runner (`:315-316`). **Closes when:** the commands run on a host that
+allows symlinks (the directory case and the file case, each exiting 2 with `unknown argument: --bogus`) and the tuple spec runs its symlink group, or a spec makes a file symlink where it can. **Source:** dorlomin harvest
+`round4/REVIEW_TELPERION_TAUR_P4.md:307-316`; legolas folder `sources/taur/LEDGER_TAUR.md:72-74`.
+
+### DX-WAVE-END-SOURCE-TUPLE-HIDDEN-PATHS — the wave-end source identity cannot see an edit to a path marked `skip-worktree` or `assume-unchanged` — **OPEN** (probe-kit tooling; Taur pass-1 review N2, carried as a candidate follow-up row)
+
+`Tools/wave-end-source-tuple.mjs` takes its path list from one call, `git status --porcelain=v1 -z --untracked-files=all` (`:283`; header `:4`, `:15`), and hashes HEAD plus one record per path it names. Git status does not
+list a path marked `skip-worktree` or `assume-unchanged` (the reviewer's reading of git; not run here), so an edit to one does not move `--source-identity`. A search of the tool, its spec and `DEFERRED_WORK.md` for either word finds nothing.
+**Closes when:** the tool refuses when `git ls-files -v` shows any such path in the tree it binds, or its header says it cannot see them, with a spec case. **Source:** legolas folder `sources/taur/REVIEW_ERELLONT_P1.md:160-161`
+and `REVIEW_ERELLONT_P2.md:157-158` ("remains a candidate follow-up row"); `sources/taur/LANDING_PACKET_TAUR.md:483-486`.
+
+### DX-KIT-GUIDE-HAND-TEXT-STALE — `PROBE_KIT_GUIDE.md` still describes `DX-96` as an open crash in seven places and lists the pre-KIT-5A fields in two shape sentences — **OPEN** (documentation; handed to the seat at the Taur landing and not done)
+
+At the tip the guide says "open defect `DX-96`" or equivalent at `migration_doc/PROBE_KIT_GUIDE.md:74`, `:115`, `:117`, `:262`, `:333`, `:338` and `:1328` ("exits 1 with a stack trace", "today by crashing with exit 1"), while the
+runtime refuses cleanly (`DX-96`, `DEFERRED_WORK.md:853-855`, closed by Batch 1652 `f52ff6bef5`: `Tools/visual-regression/lib/probe-runtime.mjs:1020-1030`). Section 1.1's capture-record sentence (`:95`) is `{name, path, byteLength, sha256, matchCount, liveness: {state, frameNumber}}` without `url` and `capturedAt`, and its
+runtime-record sentence (`:111-113`) lists `probe, generatedAt, origin, ...` without `startedAt` and `elapsedMs`, beside the section 2.1 paragraph that names all four (`:274-283`), so the guide contradicts itself. Both items were the seat's
+landing chores (the Taur lane left §1.1 to the seat by the ruling that confined it to section 2; its packet said the DX-96 prose "needs a one-paragraph edit at landing"). **Closes when:** the seven
+statements read as repaired (with the batch that repaired it) and §1.1's two sentences carry the four fields; `probe-kit-inventory.mjs --check` is unaffected (the edits lie outside the generated region, which starts at `:416`).
+**Source:** legolas folder `sources/taur/REVIEW_ERELLONT_P2.md:150-152`, `sources/taur/LANDING_PACKET_TAUR.md:192-195` and `:468-473`.
+
+### NEW-KIT-GOVERNANCE-CENSUS-LIB-BLIND — the origin-governance census reads only flat `probe-*.mjs`, so a hard-defaulted origin that lives in a `lib/` driver is never counted — **OPEN** (probe kit; the Taur lane's ledger row)
+
+`probe-fleet-contract.spec.mjs` builds its fleet from `readdirSync(HERE)` filtered to `probe-*.mjs` (`Tools/visual-regression/probe-fleet-contract.spec.mjs:87-92`), and the cloud/god-ray ratchet takes the subset `/^probe-(cloud|godray)-/` (`:1853-1855`).
+Both c11 libraries hard-defaulted `PROBE_BASE` to 8080 before Taur and the ratchet never moved when Taur removed them (the lane's account); the structure that hid them stands. At the tip a live instance is
+`Tools/visual-regression/lib/celestial-capture-harness.mjs:46`, `export const BASE = process.env.PROBE_BASE || "http://localhost:8080";`, and `Tools/visual-regression/lib/c11-146-route-evidence.mjs:29` names 8080 as a server origin constant. Whether a probe that is
+on `runProbe` reaches the first of these was not read. `DEFERRED_WORK.md:839` (C13-N01) widened the detector to the bare-constant form for probe files and names no `lib/` case. **Closes when:** the census includes the `lib/` drivers that
+open a page (or a spec names the ones that may keep a default and why), with a case that fails on a new hard default there. **Source:** legolas folder `sources/taur/LEDGER_TAUR.md:35-38`; `sources/taur/LANDING_PACKET_TAUR.md:190`.
+
+### NEW-GLOBE-PICK-H44-F3 — `probe-globe-pick-h44.mjs` passes its timeout as the page-function argument, so its wait for the viewer runs at Playwright's 30 s default — **OPEN** (probe, one line; the Moria F3 shape)
+
+`Tools/visual-regression/probe-globe-pick-h44.mjs:82` is `await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });`: the second argument of `waitForFunction` is the page function's argument, and the options are the third, so the 90 s is ignored. The
+edge-job runner already flags the shape (`Tools/visual-regression/edge-job-runner.mjs:44`, the detector `:172-184`, the note `:272`) and the shipped plan runs this probe (`globe/pick-h44`, `Tools/visual-regression/edge-job-plan.json`). Taur's census found this the only such site among the plan's probes
+and their direct lib imports (`REVIEW_ERELLONT_P1.md:31`); not re-run. A search of `DEFERRED_WORK.md` for `Moria F3` finds no row. **Closes when:** `null` is passed as the second argument (`waitForFunction(fn, null, { timeout: 90000 })`), after which the runner's
+detector (`:172-184`) no longer flags the site and no F3 note is composed for the entry at run time (`:272`; the plan entry itself carries no F3 note). **Source:** legolas folder `sources/taur/LEDGER_TAUR.md:39-41`.
+
+### NEW-C11-PROBE-BASE-NORMALIZER-DUP — `normalizeProbeBase` is defined twice, identically, in the two c11 libraries — **OPEN** (probe kit, small; the Taur lane's ledger row)
+
+`Tools/visual-regression/lib/c11-13-voxel-inside-camera-probe.mjs:169-186` and `Tools/visual-regression/lib/c11-90-primitive-restart-probe.mjs:20-37` hold the same function (a bare http(s) origin with no credentials, path, query or fragment, else a
+`STRUCTURAL:` error); each calls `throwIfProbeBaseRefused` first (`:307`, `:101`). Each library exports its own copy, and each library's spec imports it (`c11-13-voxel-inside-camera-probe.spec.mjs:43`, `c11-90-primitive-restart-harness.spec.mjs:22`); the entry scripts do not. **Closes when:** one normaliser has one home and both libraries import it, the specs
+unchanged. **Source:** legolas folder `sources/taur/LEDGER_TAUR.md:48-50`.
+
+### NEW-KIT-IMPORT-MUTATED-BARE-SPECIFIERS — `lib/import-mutated.mjs` says bare specifiers resolve as the original would, but from a `data:` module they do not — **OPEN** (probe-kit helper header or code; found by the Taur spec writer)
+
+The header says "Bare specifiers (`node:fs`, `playwright`) are left alone and resolve as the original would" (`Tools/visual-regression/lib/import-mutated.mjs:26-27`) and the loader rewrites only `from "./..."` clauses (`:23-25`, the rewrite at `:59`). A `data:` module cannot resolve a package
+specifier: the sweeper and then the lead imported a `data:text/javascript;base64,` module whose source imports `"esbuild"` with the machine's Node (v26.13.1) and got `ERR_UNSUPPORTED_RESOLVE_REQUEST` ("Failed to resolve module specifier"). `Tools/visual-regression/c11-run-entry.spec.mjs:63-76`
+carries its own loader (`rewriteSource`, `:73`) for that reason and resolves bare specifiers through `createRequire`. The loader imports through a `data:` URL, so identical source is one cached module as well (the lane's note). **Closes when:** the helper resolves package specifiers
+(and says how identical sources are cached) or its header drops the claim, with a case over a module that imports a package. **Source:** legolas folder `sources/taur/LEDGER_TAUR.md:66-68`;
+`sources/taur/LANDING_PACKET_TAUR.md:327-329`.
+
+### NEW-C11-90-PROVENANCE-NEEDS-BUILD — the c11-90 probe hashes a built Sandcastle demo before it measures anything, so an unbuilt tree dies with ENOENT after the run directory is made — **OPEN** (probe, small; the Taur lane's ledger row)
+
+`Tools/visual-regression/lib/c11-90-primitive-restart-probe.mjs:164-166` lists `Apps/Sandcastle2/gallery/khr-mesh-primitive-restart-dev/main.js` among `LOCAL_PATHS`; that folder is git-ignored build output (`git check-ignore` hits `.gitignore:19`), and
+`hashFile` reads it with `fs.readFileSync` (`:233-234`) through `collectLocalProvenance` (`:242`), called at `:1266` after the output and run directories are made (`:1257-1260`). On a tree that was never built this throws an uncaught `ENOENT`
+instead of a named refusal and leaves an empty run directory. Read, not run. The spec stays hermetic by running that path under a temporary cwd. **Closes when:** a missing local file is a named refusal (or the probe says it needs the build) raised before
+any directory is made, with a spec case. **Source:** legolas folder `sources/taur/LEDGER_TAUR.md:69-71`; `sources/taur/LANDING_PACKET_TAUR.md:330-331`.
+
+### NEW-FRESHNESS-TRANSIENT-EDIT-CERTIFIED — a source saved and reverted inside one build's window leaves a record that vouches for bytes the build read from the transient edit — **OPEN** (build tooling; the third review's row, never filed; landed in Batch 1681)
+
+`runStampedBuild` hashes the inputs before the build, removes the records, runs the build and writes the records derived from that
+snapshot (`scripts/specBundleFreshness.js:1083-1104`); it never hashes again after the build. Its comment says "An edit made while the build
+runs is therefore never certified: the record holds the inputs as they were before the build read them" (`:1063-1064`). That holds for an
+edit that is still in place afterwards (the next check hashes it and reads stale). It does not hold for an edit that is saved and then
+reverted while the build runs: the build can read the transient bytes, the record holds the pre-edit hashes, and once the revert has landed
+the sources equal the record, so the lane reads fresh over bytes built from text the tree no longer holds. The builds spec pins the
+in-place edit only (the case of a source a build edits after bundling it, `scripts/__tests__/specBundleFreshnessBuilds.spec.mjs`, round 3's
+test 5). **Read at the tip (the helper and its comment); no sequence was run at the tip.** **Closes when:** either the helper hashes the
+inputs again after the build and skips the stamp when they differ from the snapshot (this closes a revert that lands after the build ends; a
+revert inside the window needs hashing at read time, for example an esbuild `onLoad` digest, which the third review named), with a case
+that edits and reverts around a build, or the comment at `:1063-1064` is narrowed to the case that is pinned. **Source:** linwe harvest
+`REVIEW_ADURANT_FRESHNESS_P3.md:207` ("Rows ready for DEFERRED_WORK.md", lines 204-214).
+
+### NEW-FRESHNESS-DELETED-SOURCE-OUTPUTS-LINGER — a source deleted since the last build leaves its built file in a directory Karma serves, and no record can see it — **OPEN** (build tooling; the third review's row, never filed; landed in Batch 1681)
+
+The default lane's full build calls `buildCesium` with `clean: false` (`scripts/specTestLanePlan.js:181-188`), and with that flag
+`prepareCesiumOutputDirectory` only creates the directory (`scripts/build.js:2192-2197`), so a file written by an earlier build whose source
+has since been deleted stays in `Build/CesiumUnminified`. Karma serves that directory whole (`${lane.outputDirectory}/**`,
+`scripts/specTestLanePlan.js:82`). `bundleTestWorkers` does not clean `Build/Specs/TestWorkers` either (`scripts/build.js:1539-1554`; the lane
+serves `**.js` there, `scripts/specTestLanePlan.js:89`). The records hash inputs (the sources), never the files of an output directory, so a
+lane reads fresh with the leftover file present: a spec that loads a deleted worker or asset passes where a clean build would answer 404.
+(The engine workers directory is wiped by its own bundler, `scripts/build.js:789`, and is not part of this row.) **Read at the tip; no
+run.** **Closes when:** a build that wrote a directory also lists what it wrote (or removes files a record's input set no longer names) so a
+leftover file reads stale, or the lane builds into a clean directory and keeps the old one only until the new write succeeds; a builds-spec
+case deletes a source after a full build and requires the lane not to serve its built file. **Source:** linwe harvest
+`REVIEW_ADURANT_FRESHNESS_P3.md:208`.
+
+### NEW-FRESHNESS-OUTPUT-STAMP-CONDITION-UNPINNED — the condition under which `buildCesium` stamps a Cesium output directory's record is pinned by no case — **OPEN** (spec gap; round 4's X2, stated as a row by the seat's ruling and by passes 4 and 5)
+
+`cesiumBuildRecords` stamps the output record only for an IIFE build that also writes the shared assets, and removes it without stamping for
+any other build into that directory (`scripts/build.js:2265`: `iife && !skipSharedAssets ? output : { ...output, stamp: false }`). No case runs
+`buildCesium({ iife: false })` or `buildCesium({ skipSharedAssets: true })` into a lane-served directory (a search of the two freshness specs for
+`iife: false` and `skipSharedAssets: true` finds none), so replacing the condition by `true` leaves every spec green (the third review's X2). No caller
+reaches the difference into a served directory today: the variant tasks pass `skipSharedAssets: true` but write the variant directories no lane serves
+(`gulpfile.js:524-548`), and `server.js:168` writes nothing to disk. The row is the proof, not a served stale byte; it matters when a caller is added.
+**Read at the tip; no mutant was run at the tip.** **Closes when:** a builds-spec case runs `buildCesium({ iife: false })` and
+`buildCesium({ skipSharedAssets: true })` into the default directory after a stamping build and asserts the output record absent and the lane
+not `none`, and the edit at `scripts/build.js:2265` to `true ?` turns it red. **Source:** linwe harvest `REVIEW_ADURANT_FRESHNESS_P3.md:156` and
+`:209`; `REVIEW_BRETHIL_FRESHNESS_P4.md:153`; `BRIEF_FRESHNESS-R4.md` ("Seat rulings for this round", the X2 and X9 bullet) and `BRIEF_FRESHNESS-R5.md` item 4.
+
+### NEW-FRESHNESS-INPUTS-HASHED-AS-BYTES-UNSHOWN — no fixture shows that inputs are hashed as raw bytes, so a hash of decoded text would pass every case — **OPEN** (spec gap; round 4's X9)
+
+The module reads each input with `readFile(path.resolve(cwd, file))` and hashes the bytes (`scripts/specBundleFreshness.js:582`). Every
+fixture that changes a binary changes a byte below `0x80`: the builds spec's kernel differs from the first by `[0, 97, 115, 109, 1, 0, 0, 0]` to
+`[0, 97, 115, 109, 1, 0, 0, 1]` (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:380` and `:627`), and the module spec writes
+`"\0asm\u0001\0\0\u0001"` (`scripts/__tests__/specBundleFreshness.spec.mjs:1162-1167`). `readFile(path, "utf8")` at `:582` therefore keeps every case green
+(the third review's X9, measured then on the module spec), although two binaries that differ only in bytes that decode to the same replacement
+character would then hash equal. The code is right; the proof is missing. **Read at the tip; no mutant was run at the tip.** **Closes when:** one
+`.wasm` fixture changes a byte at or above `0x80` and the case goes red under the `"utf8"` edit at `:582`. **Source:** linwe harvest
+`REVIEW_ADURANT_FRESHNESS_P3.md:162` and `:210`; `REVIEW_BRETHIL_FRESHNESS_P4.md:154`; `BRIEF_FRESHNESS-R4.md` (X9 bullet).
+
+### NEW-FRESHNESS-WATCH-RACES-STAMPING-BUILD — a watch rewrite that races a stamping build in another process can leave a record over the watch's bytes — **OPEN** (build tooling; the fourth review's row, which passes 5 and 6 left standing; seat ruling "rows, not this round")
+
+Every rewrite of the watch removes the three records, then writes (`scripts/build.js:2418-2419` over `runStampedBuild`, which removes at
+`scripts/specBundleFreshness.js:1095-1099` and runs the body at `:1100`). A `gulp test` build in another process removes, writes and then stamps
+(`:1095-1103`). If that stamp lands after the watch's removal and before its writes finish, the record vouches for bytes the watch wrote after the
+snapshot the record hashes. The removal-before-every-rewrite repair, its guide sentence ("a `gulp test` build that stamps them while the watch is
+running vouches for them only until the watch's next rewrite", `migration_doc/DEBUGGING_GUIDE.md:1316`) and the JSDoc at `scripts/build.js:2367-2374`
+close the sequential case; the specs drive the watch's handlers in one child process (the long watch and its overlap entries) and no case has two
+processes. The wording stands as it is only for processes that do not overlap. **Read at the tip; no two-process run was made (not authorised then, and
+none at the tip).** **Closes when:** a lock file per output directory taken by every stamping build and every watch rewrite, or a write generation the
+watch bumps and the stamping build re-reads after its build (skipping the stamp when it moved), with a two-process case; or the guide and JSDoc sentences
+are narrowed to the sequential case. **Source:** linwe harvest `ROUND4_BARANDUIN.md:119-121`; `REVIEW_BRETHIL_FRESHNESS_P4.md:155`;
+`BRIEF_FRESHNESS-R5.md` item 4 and `REVIEW_EKKAIA_FRESHNESS_P5.md` section 7 ("pass 4's rows stand").
+
+### NEW-FRESHNESS-WATCH-NEVER-RUN-LIVE — `gulp buildWatch` has never been run beside a `gulp test`, and the five `gulp.watch` registrations are read by no spec — **OPEN** (measurement owed and a wiring gap; every review of rounds 3 to 8 lists the run as NOT RUN)
+
+The watch's behaviour rests on sandbox cases that call the exported handlers of `startCesiumWatchBuild` directly: the watch rows, the long watch, the
+`--minify` sequence and the failed-removal rows of `scripts/__tests__/specBundleFreshnessBuilds.spec.mjs`. The third review said so: "No end-to-end
+run touches the watch; P3-1's repair round owes one" (`REVIEW_ADURANT_FRESHNESS_P3.md:191`), and the fourth, fifth, sixth, seventh and eighth list a live
+`gulp buildWatch` among the things not run (the fourth and the sixth beside a live `gulp test`; `REVIEW_BRETHIL_FRESHNESS_P4.md:162`, `REVIEW_EKKAIA_FRESHNESS_P5.md` section 9 ("The watch in a real repository or two processes racing"),
+`REVIEW_LINAEWEN_FRESHNESS_P6.md` "What I did NOT run", `REVIEW_IANTIAUR_FRESHNESS_P7.md` section 13, `REVIEW_ANDRAM_FRESHNESS_P8.md` section 10); no round
+ran one. The glue that binds a glob and an event to a handler is `gulpfile.js:157-188` (shader files to `rebuildGlsl`, the WGSL folder to `rebuildWgsl`,
+the sources to `rebuildSources`, spec `add` and `unlink` to `rebuildSpecList`, spec `change` to `rebuildSpecs`); a search of the spec and tool files for
+`buildWatch` and `watch.rebuild` finds only comments and the driver's call of `startCesiumWatchBuild` (`specBundleFreshnessBuilds.spec.mjs:156-157`, `:198`,
+`:1183`), so swapping two of the registrations or dropping one passes every spec. The `rebuildSources`, `rebuildGlsl` and `rebuildWgsl` rows use a stand-in for the
+inject file (`inject: "present"`, spec comment at `:680-698`), which the watch cannot reach live while `NEW-BUILDWATCH-IIFE-INJECT-DELETED` stands.
+**Read at the tip; no watch was run.** **Closes when:** a run records `gulp buildWatch` with a `gulp test` beside it (an edit, a spec added, a shader edit;
+the lane read after each), once the inject-file row is repaired; and a case reads the five registrations (or `buildWatch` is moved into a function the spec can
+drive with a stub `gulp.watch`) and asserts which handler each glob and event runs. **Source:** linwe harvest as cited above.
+
+### DX-FRESHNESS-RELEASE-REFUSAL-NAMES-OUTPUT — the release lane's refusal says it will not build `Build/Cesium` even when the stale record is the spec bundle and `Build/Cesium` is fresh — **OPEN** (message wording; the second review's R-3, whose wording half the over-triggers row did not carry)
+
+`ensureSpecLaneFresh` throws, for any `refuse` decision, `` `${first.report}\n  The test task does not build ${lane.outputDirectory}; refusing to run Karma against it.` ``
+(`scripts/specBundleFreshness.js:1427-1430`), and `decideSpecLaneRebuild` returns `refuse` for the release lane whenever anything but `spec-set-drift` is stale (`:1239-1241`),
+including a Specs-helper edit that makes only the combined spec record stale. The report above that line then reads `Cesium output "Build/Cesium" is fresh.` and the last line
+still names that directory as the thing it will not run against. The second review states the two lines (`REVIEW_HAMA_FRESHNESS_P2.md:280`) with no run of that case behind them: its live run of a Specs-helper edit was not run (`:99`, S4) and the helper-only cell was exercised only by the Node spec (`:281`); at the tip it was
+read from the code, not run. Cost: a developer chases a fresh directory. **Closes when:** the line names the stale record's directory (the first stale entry of `first.records`
+or the spec bundle), and a case asserts it for a helper-only drift in the release lane. **Source:** linwe harvest `REVIEW_HAMA_FRESHNESS_P2.md:280-281`
+("word the refusal by which record is stale").
+
+### NEW-FRESHNESS-WATCH-SOURCES-WORKERS-ASSERT-NEVER-RED — the assertion that `rebuildSources` rebuilds the output's workers was never seen to go red — **OPEN** (spec proof; the sixth review's R6-b, taken in round 7 without its mutant)
+
+Round 7 added the workers file to the succeeding `rebuildSources` row (`Build/CesiumUnminified/Workers/markerWorker.js`, in `SOURCES_OUTPUTS`,
+`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:710-713`). The round's own report says "Not run as a mutant: a rebuildSources body without its bundleWorkers step ... I did not
+see it go red" (`ROUND7_DUNGORTHEB.md:130`), and the seventh and eighth reviews' cell tables carry no such cell (their cells edit the wrapper, not a handler's body). The body at the tip
+is `rebuildBundles()` then `bundleWorkers({ ... })` (`scripts/build.js:2443-2451`). The assertion is read to be live (the file is written only by `bundleWorkers`, after the full build wrote the
+older text); that is a reading, not a measurement. **Read at the tip; no mutant was run.** **Closes when:** the edit that drops the `bundleWorkers` call from `rebuildSources` is run against the
+succeeding `rebuildSources` row and goes red on the workers assertion (exit code and assertion text recorded). **Source:** linwe harvest `REVIEW_LINAEWEN_FRESHNESS_P6.md:265-267` (R6-b);
+`ROUND7_DUNGORTHEB.md:130`.
+
+### DX-CREATEINDEXJS-SPEC-NO-RUNNER-HOME — `scripts/__tests__/createIndexJs.spec.mjs` has no runner home and, on an unbuilt tree, fails — **OPEN** (a spec with no home; found by the freshness lane's round 3)
+
+The spec imports `createIndexJs` from `scripts/build.js` and bundles the generated engine index with esbuild (`scripts/__tests__/createIndexJs.spec.mjs:11-38`). It is in no
+package script: the `test-build-infra` key lists nine `scripts/__tests__` specs and not this one (`package.json:165`), and the shrink-only census of specs without a home covers `Tools/`
+only (`Tools/visual-regression/lib/homeless-spec-allowlist.mjs`, no row for it). Round 3 ran it alone: exit 0 on a built tree, exit 1 on an unbuilt one, where the generated shader modules do not
+exist yet (`ROUND3_LINWE.md:82`; not re-run at the tip). The tooling catalog lists it as ACTIVE (`migration_doc/TOOLING_CATALOG.md:2451`). Under the fork's proof bar a spec with no runner home is a review blocker.
+**Closes when:** it is added to a runner key whose tree is built when it runs (or the spec builds what it needs, or skips with the measured reason on an unbuilt tree), and a census covers
+`scripts/__tests__` the way the `Tools/` one does. **Source:** linwe harvest `ROUND3_LINWE.md:82`.
+
+### NEW-CLOUD-WEATHER-TRANSITION-PAIR-REPLACE-UNPINNED — both bind-group caches key the weather-transition pair by object identity, and no spec pins that its producer replaces the pair when a member changes — **OPEN** (spec gap in engine behaviour; the key guards' K1, landed in Batch 1673)
+
+Both caches compare `weatherTransition` with `===` (`WebGPUProceduralCloudRenderer.ts:1729`; the shadow cache's entry likewise). That is sound only because the one producer,
+`CloudWeatherTransitionResources#prepare`, returns a new frozen pair whenever the weather view or the material-flow buffer changed and the same pair otherwise
+(`packages/engine/Source/Renderer/WebGPU/WebGPUCloudWeatherTransition.ts:114-123`; the interface is `readonly`, `:12-15`). A producer that kept one pair object across a member change would
+make both caches reuse a bind group that binds the old view and buffer at bindings 29 and 30. At the tip no spec drives `prepare` twice with a changed member: the cache specs build their pairs by hand,
+and the godray order spec reads one pair and the bind-group entries it produced (`Tools/visual-regression/webgpu-cloud-godray-current-mask-order.spec.mjs:3938-3964`); the weather-layer specs of
+`Tools/visual-regression/` use "bindings" for shader bindings. **Read at the tip; no mutant was run.** **Closes when:** a case calls `prepare` with a changed weather view, then with a changed flow buffer, then with neither,
+and asserts a new pair, a new pair, and the same pair; making `prepare` return the existing pair after a member change turns it red. **Source:** linwe harvest `LANDING_PACKET_ARAGORN.md:236` (K1).
+
+### NEW-CLOUD-BINDGROUP-COMPLETENESS-GUARD-BLIND-SPOTS — the completeness guards of the two bind-group cache specs cannot see a key that is compared but never stored, or a binding redirected through a fallback — **OPEN** (known limit of the spec; the key guards' K2 and K3, landed in Batch 1673)
+
+The completeness tests list the fields the cache entry stores and the bindings the descriptor emits, and require a guarding case for each
+(`WebGPUEnvironmentalEffectsBindGroupCacheSpec.js:646-684`; `webgpu-cloud-shadow-bind-group-cache.spec.mjs:364-406`). A new input that is compared at `WebGPUProceduralCloudRenderer.ts:1712-1737` but never stored in
+the entry (`:1782-1808`) is seen by neither test; it fails a reuse assertion only if the spec's context gives it a defined value, and in the engine it can only cost reuse. A new input that only redirects an existing
+binding through a `??` fallback, as `weatherTransition?.weatherView ?? exactWeatherView` does at bindings 29 and 30 (`:1769-1778`), without being compared or stored, is seen by no test, and there the cache would serve a
+group built for the old input (the packet's wording: "seen by no test here"). The limit is not written in either spec. **Read at the tip; no mutant was run.** **Closes when:** it may not close: the
+class answer is that a new input is read for in review, as the freshness lane's S-1113-22 says of code keyed on anything a table cannot enumerate; the row records the limit, and a one-line comment in each spec names it.
+Alternatively the descriptor is built from a table the completeness test can read. **Source:** linwe harvest `LANDING_PACKET_ARAGORN.md:237` (K2) and `:188-191` (K3, K4), `REVIEW_HAMA_FRESHNESS_P1.md:206-207`.
+
+### DX-KIT-CLOUDS-IN-REFLECTIONS-NO-PAGE-SWITCH — no landing cell can switch on the context option `cloudsInReflections`, so the sky-cube cloud march and its zero-coverage gate (sheet row B4) are never exercised by the kit — **OPEN** (probe-kit piece owed; Principle 9 row the cx-edge-pieces lane and its reviewers named for the seat)
+
+The dynamic environment map marches clouds into the cube faces only when `cloudsInReflections` is true on the context, the published IBL coverage is above 0 and
+the baked noise exists (`cloudMarchActive`, `packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts:2487-2492`). The context reads the
+option from `_options.webgpu?.cloudsInReflections` and defaults it to false (`WebGPUContext.ts:1806-1807`), and the CesiumViewer page, which every landing cell
+runs on, passes only `contextOptions: { renderer: "webgpu" }` (`Apps/CesiumViewer/CesiumViewer.js:100`). The cell `E-ZC-skycube` varies `cloudsEnabled`,
+`cloudContributesIBL` and `cloudCoverage` (`Tools/visual-regression/lib/landing-cell-table.mjs:674-692`), none of which sets the option, and a search for
+`cloudsInReflections` in `Tools/visual-regression/lib` and the landing probe finds nothing (the bespoke probes `probe-cloud-ibl-full.mjs`, `probe-c11-193b-shared-submit.mjs`
+and `probe-c11-193c-demand-priority.mjs` set or read it on contexts they build themselves). So the cell measures that the clouds-on dials leave the cube faces equal to the
+clouds-off cube, on both arms, and never reaches the march the sheet's B4 asks about; the cube's coverage is also rounded to `IBL_REVISION_UNIT_STEP` before the
+gate reads it (`WebGPUProceduralCloudRenderer.ts:2093-2095`, `:2176-2180`), which the lane read as 1/256 steps so that `1e-30` publishes 0 (the lane's reading, not
+re-derived). The lane built the piece as briefed and said so in its sheet (`EDGE_SHEET_CX-EDGE-PIECES.md:72`). **Closes when:** a kit page can turn the option on
+(a landing dial that reaches `contextOptions`, or a viewer switch), and a cell reads, on a cube page with coverage 0 and a value that survives the rounding, that
+the march is active and the faces are equal to the clouds-off cube, with a mutant that makes the gate always true turning it red. **Source:** aelinuial harvest
+`HANDBACK_AELINUIAL.md:144-145` (F-3), `REVIEW_AGLON_CX-EDGE-PIECES_P1.md:249-253` and `DESIGN_AELINUIAL.md:1049-1054`; leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt:47-48` (NOT RUN: the sky-cube coverage gate, cloud alpha and NaN/Inf, C3, C4, B2w); Ascar folder `base/REVIEW_ANDUIN_CX-R36-ZERO-COVERAGE_P1.md:265-269` (browser items 3 and 5, unmeasured).
+
+### DX-KIT-CLOUD-TARGET-NAN-INF-NOT-READABLE — the kit has no reader of a float intermediate target of the cloud march, so the NaN and Inf column of the zero-coverage rows was left out — **OPEN** (probe-kit piece owed; sheet rows B1 to B5)
+
+The zero-coverage rows (`E-ZC-underside`, `E-ZC-density`, `E-ZC-skycube`) record the frame, the gate and the console lines; they do not record whether the cloud
+march's float target holds NaN or Inf at coverage 0, 1e-30 or -0.5, which is what the sheet's B rows are about. The cloud half target is `rgba16float`
+(`cache.halfView`, per the lane's design) and the measured cube is `rgba8unorm`, so neither a screenshot nor a cube face can show it. No kit piece reads the cloud march's half target: no non-spec file under `Tools/visual-regression/` names `halfView`, and the one cloud probe that calls `mapAsync`, `probe-cloud-ibl-full.mjs`, reads six face means of the environment cube through a compute reduction (`:91-150`), not the march's target. The kit's other float readbacks read other textures, among them
+the FFT ocean's displacement field, read through a compute-shader copy because that texture has no `COPY_SRC` (`Tools/visual-regression/lib/ocean-displacement-readback.mjs:1-12`), the velocity target's half-floats (`lib/metrics/velocity-texels.mjs:1-9`) and the atmosphere LUTs (`probe-atmo-luts.mjs:339-345`);
+none of them reads a cloud target. The lane did not build one, under its ruling of no
+engine change and no readback piece (`BRIEF_CX-EDGE-PIECES.md:49-50`), and no row on main names it. **Closes when:** a kit reader copies the cloud half target (and
+the cube if wanted) into a readable buffer on the page, records the NaN and Inf counts per page, and a spec with a stand-in target and an inertness mutant pins it;
+the zero-coverage cells then judge the column. **Source:** aelinuial harvest `HANDBACK_AELINUIAL.md:146` (F-4), `DESIGN_AELINUIAL.md:1055-1057`,
+`REVIEW_AGLON_CX-EDGE-PIECES_P1.md:250-251`.
+
+### DX-KIT-CLOUD-ALPHA-NOT-READABLE — the cloud-stats reader has no cloud alpha or coverage field, so "no cloud contribution" is read only as "frame equal to the clouds-off frame" — **OPEN** (probe-kit reader owed; sheet rows B1 to B3)
+
+The sheet asked for the cloud alpha through `--readers cloud-stats`. The reader's page function and record builder (`Tools/visual-regression/lib/landing-page-readers.mjs:109-180`)
+carry the volumetric cloud statistics field by field, and none of them is an alpha or a coverage value (a search of the file for `alpha` and `coverage` finds
+nothing). The zero-coverage cells therefore decide "no contribution" by comparing the frame with the clouds-off page of the same run, inside that page's own
+run-to-run band (`lib/metrics/landing-variant-control.mjs`), which cannot tell a cloud with alpha near 0 from no cloud, and cannot see a contribution below the band. Leg 2
+read the zero-coverage pages as equal to the clouds-off frame on both arms (`SEAT_RECORD_2026-11-13.md:158`), which is the figure this reading allows. `DEFERRED_WORK.md`'s C13-N04b
+rows about `meanCloudAlpha` (`:966`) concern another instrument. **Closes when:** the reader (or a new one) records the cloud alpha or the published coverage per page
+from a seam the engine already exposes, or the missing seam is named and mirrored (Principle 9), and a spec pins the field. **Source:** aelinuial harvest
+`HANDBACK_AELINUIAL.md:146` (F-6), `DESIGN_AELINUIAL.md:1061-1063`, `REVIEW_AGLON_CX-EDGE-PIECES_P1.md:252`.
+
+### NEW-CLOUD-BOUND-REUSE-PIPELINE-NOT-MIRRORED — the primary-reuse march pipeline a frame binds is a local of the renderer, so a page can read that a frame reused but not which pipeline it bound — **OPEN** (engine seam owed, Principle 9; the kit records NOT AVAILABLE)
+
+In `prepareCloudFrameAndEncodeMask` the reuse pipeline is a local, `const reuseMarchPipeline = reuseRequested ? requestCloudMarchPipeline(...) : ...`
+(`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:5454-5460`), bound at `:6430`; the only thing it leaves on the cache is the boolean
+`cache.primaryReuseApplied` (`:6438`). A search of the renderer for a bound-reuse key or a reuse-march field finds none. The reconstruction timeline therefore reads
+the family of the half emit pipeline from `cache.marchPipelines` (the lane's route) but its per-frame reuse column is the constant
+`REUSE_BINDING_NOT_AVAILABLE` (`Tools/visual-regression/lib/cloud-reconstruction-timeline.mjs:53`, `:508`), and sheet row C5's "bound reuse key per frame" can never be
+read, even once a page makes the engine request reuse. `NEW-CLOUD-CX-PRIMARY-REUSE-NOT-EXERCISED` (`DEFERRED_WORK.md:36214`) files the page that never requests reuse; this row is the
+separate missing mirror, which that row's "Closes when" does not cover. **Closes when:** the cloud cache mirrors the bound reuse pipeline's key beside
+`primaryReuseApplied`, the timeline records it per frame, and a spec with a mutant that binds the wrong family turns it red. **Source:** aelinuial harvest
+`HANDBACK_AELINUIAL.md:147` (F-7) and `:20`, `DESIGN_AELINUIAL.md:1064-1066`, `EDGE_SHEET_CX-EDGE-PIECES.md:86`.
+
+### DX-KIT-DEVICE-LOSS-WITH-PENDING-VARIANTS-NO-CELL — no landing cell forces a device loss while pipeline variants are still pending, so row C3 of the Codex cloud sheet has never run — **OPEN** (kit cell owed; the lane's piece list, not built by ruling)
+
+The sheet's C3 asks what the cloud cache and the pipeline cache do when the device is lost during reconstruction start-up, with variants pending. The device-loss steps
+have three modes, `teardown` and `forced-loss` (`DEVICE_LOSS_MODES`, `Tools/visual-regression/lib/device-loss-steps.mjs:70`) and `teardown-keep-device` (`:73`, accepted at `:522-524`), none triggered by the pending count; the cell
+`E-T-flight` carries the named console-line counts (`lib/landing-cell-table.mjs:332-360`) but not the reconstruction timeline. The lane's own estimate of the piece:
+a loss mode that forces the loss at a chosen point (after the reconstruction activation, with `webgpuPipelineCache.getStats().pending` above 0, recording that it
+was), a timeline opt-in on an `E-T-flight` variant with a context-identity column so rows after recovery are told from rows before, and the console counts that exist;
+medium, about 150 lines of kit code plus a spec in a contended file. Whether the engine re-creates `_cloudCache` after recovery on main is the first thing to read. No
+row on main names C3 (`NEW-CLOUD-CX-TWO-VIEWS-NO-RIG` is C4). **Closes when:** a cell forces the loss in that window on a build and reads the console counts and the
+post-recovery timeline, with a mutant that loses the context-identity column turning a spec red. **Source:** aelinuial harvest `HANDBACK_AELINUIAL.md:110-116` (section 5),
+`BRIEF_CX-EDGE-PIECES.md:31-33` (ruling 2); Ascar folder `EDGE_SHEET_CX-CLOUD.md:41` (row C3) and `:50` (the reconstruction dial on the `E-T-flight` pages); leg-2 folder `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt:47-48` (C3 NOT RUN).
+
+### DX-KIT-WEATHER-MAP-ZERO-TEXELS-NO-CELL — no cell measures the cloud march over a weather-map region of known zero coverage, so sheet row B2w has never run — **OPEN** (kit rig and metric option owed; the lane's piece list, not built by ruling)
+
+B2w asks that texels of the weather map that hold zero coverage draw no cloud. The kit has weather rigs (`Tools/visual-regression/rigs/cloud-wx-all-dials.mjs`,
+`cloud-wx-interpolation.mjs`, `cloud-wx-populations.mjs`, `cloud-wx-vertical.mjs`, `cloud-wx-workers.mjs`), none declared with a zero-coverage region at a known screen
+area, and the variant-control metric compares whole frames: `lib/metrics/landing-variant-control.mjs` has no mask or region option (a search for `mask` and `region`
+finds nothing). Without the float readback (`DX-KIT-CLOUD-TARGET-NAN-INF-NOT-READABLE`) and the alpha read (`DX-KIT-CLOUD-ALPHA-NOT-READABLE`) the masked comparison against
+a clouds-off page is the only evidence available. The lane sized it as medium: one rig or fixture map checked to hold the region, one mask option in the metric, a spec. No
+row on main names B2w. **Closes when:** a rig with a known zero region exists, the metric accepts a region mask, and a cell records the masked diff against the clouds-off
+page with a mutant that ignores the mask turning a spec red. **Source:** aelinuial harvest `HANDBACK_AELINUIAL.md:124-128`, `BRIEF_CX-EDGE-PIECES.md:31-33`.
+
+### NEW-KIT-RECON-TIMELINE-ACTIVATION-CLAUSES-UNPINNED — the timeline's activation check needs both `reconstructionEnabled` and `attachmentsEnabled`, but no case varies one without the other — **OPEN** (probe-kit spec; a surviving mutant of the second reviewer)
+
+`pageRunReconstructionTimeline` accepts the activation only when the public switch answered and `cache.reconstructionEnabled === true && cache.attachmentsEnabled === true`
+(`Tools/visual-regression/lib/cloud-reconstruction-timeline.mjs:246-247`). The spec's stand-in switch sets both flags from one argument
+(`cloud-reconstruction-timeline.spec.mjs:150-151`) and case `4.7-5b` (`:1054`) leaves both false, so it kills the mutant that drops the whole readback but not one that drops
+only the `attachmentsEnabled` clause (the second reviewer's mutant MX4, exit 0). Not live: `CesiumDebug.cloudReconstruction(true)` sets both together
+(`packages/engine/Source/Scene/CesiumDebug.js:1148-1152`, read at the tip), so this is a guard against a tree whose switch half-applies. **Closes when:** a case uses a
+stand-in switch that sets `reconstructionEnabled` but leaves `attachmentsEnabled` false and expects `activation-not-applied`, and the MX4 mutant turns it red. **Source:**
+aelinuial harvest `REVIEW_ELMOTH_CX-EDGE-PIECES_P2.md:135-140` (R-1) and `:95-98`.
+
+### DX-KIT-LANDING-SIZE-RULE-OVERRUN — `probe-landing-cells.mjs` is 1,090 lines and its note said the next functional touch decomposes it; five batches touched it since (Batches 1650, 1652, 1666, 1674 and 1680; the last two took it over 1,000), and the stage's headroom row and the decomposition record are stale — **OPEN** (probe-kit structure; records)
+
+The file was 998 lines at Batch 1648, "two under the 1,000-line rule, so its next functional touch decomposes it" (`DEFERRED_WORK.md:34555-34557`, a Notes bullet, no row). Batch 1674 (`b2e774dd7b`) took it to
+1,066 and Batch 1680 (`486f4c35c7`) to 1,090 (`git show <commit>:` with `wc -l`; 1,090 at the tip), and neither decomposed it: the cx-edge-pieces lane named
+the size in its hand-back and left the decision to the seat (`HANDBACK_AELINUIAL.md:140-141`, `HANDBACK_TAEGLIN.md:157-159`, both reviewers). `lib/landing-cell-stage.mjs` is 983 lines
+at the tip (1,012 with the Codex unit, 907 after Batch 1678 moved the pending-pipeline wait to `lib/landing-pipeline-wait.mjs`, 983 after Batch 1680); the row
+`DX-KIT-LANDING-STAGE-HEADROOM` said "at 982 lines" (`DEFERRED_WORK.md:32815`; this batch adds the tip's 983 there), and `migration_doc/ES6_MODERNIZATION_STATUS.md` section 7 carries no row for the
+split (the cx-tools reviewers asked for it: legolin harvest `REVIEW_ANDUNIE_CX-TOOLS_P2.md:249-250`, `HANDBACK_LEGOLIN.md:54`). The rule's text sits under the engine standards
+(`CLAUDE.md`, "Size"); the kit rows above apply it to the kit as well. **Closes when:** the probe is decomposed on its next functional touch (a companion piece for the
+verdict list or the receipt builders), the headroom row's count is the tip's, and the split of `landing-pipeline-wait.mjs` and the probe split are recorded where the kit's
+decompositions are recorded, or the rule is ruled not to bind the kit. **Source:** aelinuial harvest `HANDBACK_AELINUIAL.md:140-141`, `REVIEW_AGLON_CX-EDGE-PIECES_P1.md:247-248`,
+`REVIEW_ELMOTH_CX-EDGE-PIECES_P2.md:150`; legolin harvest as above.
+
+### NEW-KIT-A8-FOG-ROW-NEVER-REACHES-THE-CHANGED-FOG-PATH — `E-A8-fog` runs with clouds and cloud shadows off, so its 0-pixel identity on the patched build cannot show anything about the fog change that sits after the shader's cloud-shadow early return — **OPEN** (kit rig owed; the lane's F-2)
+
+The cell stages the rig `cloud-shadows-parity-fog` (`lib/landing-cell-table.mjs`, `E-A8-fog`), whose dials are `enableVolumetric: false`, `cloudCastShadows: false`,
+`volumetricFogEnabled: true`, `volumetricFogDensity: 0.0008`, `cloudShadowHiFi: false` (`Tools/visual-regression/rigs/cloud-shadows-parity-fog.mjs`; it is the off-path parity
+scene of its own description). The fog renderer writes the shader's cloud-shadow enable as `cloudsEnabled ? 1.0 : 0.0`
+(`WebGPUVolumetricFogRenderer.ts:1215-1216`), so with clouds off the cloud-shadow function returns at its first test, `if (cloudShadowEnable < 0.5) { return 1.0; }`
+(`Shaders/WebGPU/Compute/VolumetricFog.wgsl:634-636`), and the shader's own comment says everything from that test upward is unchanged by the zero-coverage normalisation
+(`:700-702`). Leg 2 read the cell as passing, 0 changed pixels, sha equal on both arms (`edge/cx-cloud-leg2/EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:105`): a true
+statement about a scene the change cannot touch. The sheet's A8 row names the high-fidelity shadow on; the lane ran the rig as declared and wrote that a hi-fi-on page "is one
+`variants` entry if the seat asks" (`EDGE_SHEET_CX-EDGE-PIECES.md:99`), which would still have clouds off. No row on main names `E-A8-fog`. The changed site, `cloudCoverageGate(...)` (`VolumetricFog.wgsl:706`), is reached only with the high-fidelity
+shadow off (that branch returns first, `:610-626`), the shadow enable on and coverage above 1e-3 (`:641-643`); the sheet of the Codex cloud
+batch named the hi-fi shadow on (Ascar folder `EDGE_SHEET_CX-CLOUD.md:22`), which would not reach it either. The fog site never had equal edges: the 1e-3 return keeps every fog threshold at most about 0.886 (`WEBGPU_DEBUGGING_LOG.md:23872`; Ascar folder `REVIEW_ARMENELOS_CX-CLOUD_P3.md:35-39`, FX-1), so the fog edit is expected to change no pixel. **Closes when:** a cell stages a
+scene with clouds on, cloud shadows on with the hi-fi shadow off, and fog on (a rig, not only a variant), reads it on both arms, and a mutant that disables the normalisation turns a spec or the
+Edge comparison red; or the claim for the fog change is recorded as resting on the shader spec `fog-cheap-coverage-gate.spec.mjs` (named in the shader's comment). **Source:**
+aelinuial harvest `HANDBACK_AELINUIAL.md:144-150` (F-2), `HANDBACK_DIRNEN.md:159-160`, `DESIGN_AELINUIAL.md:1045-1048`; Ascar folder `EDGE_SHEET_CX-CLOUD.md:22`, `base/REVIEW_ANDUIN_CX-R36-ZERO-COVERAGE_P1.md:270` (browser item 6); leg-2 folder `EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:105-106`.
+
+### DX-KIT-SPECS-REGISTERHOOKS-NODE-22-FLOOR-AND-NO-CI — the Node-run specs repaired for Node 26 call `module.registerHooks`, were never run on Node 22, and run in no CI workflow; the Credits spec's transform is inert on Node 26 — **OPEN** (CI and engines gap; found by the Node 26 and main-reds-2 reviews)
+
+Nineteen spec files in `Tools/visual-regression/` call `registerHooks` (`clustered-light-upload-invalidation`, `globe-material-log-depth-module`,
+`globe-material-pipeline-format-axis`, `globe-ground-atmosphere-scene-mode-gate`, `polyline-nearclip-wiring` and fourteen older ones; a `grep -l` of the folder's top level
+and `lib`), with `lib/engine-ts-resolver.mjs` and the two Scene specs `PickingMostDetailedSupportSpec.mjs` and `GlobeSurfaceTileProviderPerTileCreditsSpec.mjs`
+(the latter at `:59-87`). The main-reds-2 lane's hand-back says `registerHooks` needs Node 22.15+ or 23.5+ (`HANDBACK_ORFALCH.md:108-109`) and both its reviewers say 22.15+ (`REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:164-165`, `REVIEW_CRISSAEGRIM_MAIN-REDS-2_P2.md:61`; not re-checked here: one Node, v26.13.1, is installed and nothing was run
+on 22), while `package.json:234-235` allows `>=22.0.0` and every workflow pins `node-version: '>=22.13.0 <23.0.0'` (`.github/workflows/dev.yml:19`, `:75`, `:110`, `:127`,
+`:169`, `deploy.yml:31`, `prod.yml:24` and the others), except the node smoke test, which runs a release build on a matrix of 22 and 24
+(`dev.yml:136-147`). No workflow runs `test-visual-regression-node`, `-node-b`, `-node-c`, `test-water-regimes`, `test-visual-probe-contracts`
+or `test-scene-node` (a search of `.github` finds none of them; the one mention of `test-tooling-catalog` is the comment at `dev.yml:61` that excludes it), so the specs that Batch 1675
+and Batch 1679 repaired are measured only on this machine's Node 26. Every worker and reviewer of both lanes wrote "Node 22: NOT RUN" (hithlum harvest
+`REVIEW_TASARINAN_NODE26-GATES_P1.md:220-221`, `ROUND2_HITHLUM.md:57` and `REVIEW_ROMENNA_NODE26-GATES_P2.md:162`; orfalch harvest `HANDBACK_ORFALCH.md:107-110`, `REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:164`).
+One consequence the second lane measured: with the Credits spec's load hook made unreachable it still passes 5 of 5 on Node 26, because its import graph holds no enum and
+Node strips the types itself, so the transform is load-bearing there only on a Node without default stripping (the reviewer's mutant, not re-run) or once the graph gains an
+enum (`REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:118-124`, `REVIEW_CRISSAEGRIM_MAIN-REDS-2_P2.md:119-120`). **Closes when:** the specs run once on the lowest Node the workflows
+resolve and on the latest 22, the `engines` floor or the hook use is made to agree (a floor of the version that has `registerHooks`, or a guard that skips with a reason), and
+the keys that matter run in a workflow or are recorded as local-only; the Credits spec gets a case that fails when its hook is dead on Node 22.
+**Source:** hithlum harvest and orfalch harvest as cited.
+
+### DX-GIT-STATUS-OVERFLOW-READS-CLEAN-IN-PROVENANCE-CHECKS — nine tracked scripts read a `git status --porcelain` whose output outgrew the default 1 MiB buffer as a clean tree — **OPEN** (tooling; found by the main-reds-2 census, reported and not edited)
+
+Each script runs `git status --porcelain` through a helper that returns null on any error and then tests the result for truthiness, so a spawn killed by the buffer limit
+reads as "not dirty": `probe-cloud-banding.mjs:140` (helper `command()`, `:91-100`), `probe-cloud-empty-frustum.mjs:451`,
+`probe-cloud-lod-hoist-perf.mjs:1099`, `probe-cloud-perf.mjs:207`, `probe-cloud-planetary.mjs:369`, `probe-cloud-tour-sequences.mjs:1361`,
+`probe-cloud-u2-perf.mjs:1213`, `run-performance-campaign.mjs:5565` (all under `Tools/visual-regression/`) and `assess-c11-146-route.mjs:153` (same folder; `gitValue`, `:135-145`).
+The lane's census named eleven; the lead re-opened each at the tip, and two of them record a null status as unknown, not clean
+(`probe-cloud-density-domain.mjs:285-288`, `probe-cloud-temporal-rte.mjs:183-187`: `dirty: status === null ? null : status.length > 0`). An overflow needs a status listing over 1 MiB (a dirty tree of tens of thousands of paths), so this is a latent provenance flaw, not a measured one.
+The other tracked scripts the census found read the same output with the default buffer and fail loudly or safe: `Tools/verify-worker-handoff.mjs:93-100` throws,
+`Tools/visual-regression/capture-and-diff.mjs:326-330` throws into "Unable to capture Git provenance", and `probe-perf-regression-gate.mjs:1342` and
+`lib/celestial-capture-harness.mjs:93` return dirty. The census was a grep of the git arguments plus a read of each site and is not a proof of completeness. **Closes when:** the
+nine helpers give the spawn an explicit `maxBuffer` and treat a null as "unknown" (never clean), with one spec over a stand-in `git` that overflows. **Source:** orfalch harvest
+`HANDBACK_ORFALCH.md:60-70` and `:114`.
+
+### NEW-SCENE-NODE-KEY-NEEDS-THE-BUILT-ENGINE-BARREL — `npm run test-scene-node` cannot pass on a clone that was never built, because the Picking spec's import graph reaches `DerivedCommand.js`, which imports the git-ignored `@cesium/engine` barrel — **OPEN** (key design; filed by the main-reds-2 lane and its reviewer)
+
+`packages/engine/Source/Scene/DerivedCommand.js:1` reads `import { MetadataComponentType } from "@cesium/engine"`, which resolves to `packages/engine/index.js`, a build product
+(`packages/engine/.gitignore:1` ignores `index.js`). On an unbuilt clone the Picking spec dies at load with "Cannot find package .../@cesium/engine/index.js" (the reviewer's run,
+`REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:150` and `:156-158`; not re-run here); the Node-flag failure of Batch 1679 had hidden it, and the lane ran the key with a scratch preload that
+stood in for the barrel (`HANDBACK_ORFALCH.md:37-41`). The key is `package.json:204`, and the fix-queue row that created it calls its three specs "build-independent"
+(`migration_doc/FIX_QUEUE_2026-08-27_AUDIT_FINDINGS.md:669`), which is no longer true of the Picking spec; no workflow runs the key (see `DX-KIT-SPECS-REGISTERHOOKS-NODE-22-FLOOR-AND-NO-CI`).
+**Closes when:** the Picking spec resolves `@cesium/engine` through a stand-in barrel in its own hook, or the key skips with a named reason on a tree without the barrel, or the
+fix-queue sentence is corrected and the key is recorded as needing a build. **Source:** orfalch harvest `HANDBACK_ORFALCH.md:37-41`, `:115`, `REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:156-158`.
+
+### NEW-KIT-DRAIN-SPEC-CANNOT-SEE-A-SHOW-WRAP-OF-THE-RENDER-BLOCK — the environment-refresh drain spec's source cut starts at the render-pass block, so a `show` condition around the whole block, or a render pass added to the early return of `updateForPass`, is not seen — **OPEN** (spec blind spot, shared with the version Batch 1679 repaired; two reviewers)
+
+`assertTickOutsideEveryGate` cuts the tileset source from `if (passOptions.isRender) {` to `if (this.show || ignoreCommands) {` and fails when the cut lacks the tick or when text before
+the tick mentions `this.show` or `_selectedTiles` (`Tools/visual-regression/environment-refresh-drain.spec.mjs:846-870`). In `packages/engine/Source/Scene/Cesium3DTileset.js` the block opens at
+`:1450` and the show gate is at `:1475` inside `updateForPass` (`:1411`), whose early return for the preload and defer-check passes is at `:1420-1431`. A condition wrapped around the
+whole render-pass block, which starts before the cut, or a render pass added to that early return, leaves the cut unchanged: the second reviewer's probe wrapped
+`if (this.show) {` around the block's opening and the spec stayed green (`REVIEW_CRISSAEGRIM_MAIN-REDS-2_P2.md:87`, `:105-120`); the version before Batch 1679 had the same blind
+spot (`REVIEW_ECHORIATH_MAIN-REDS-2_P1.md:87-88`). Not re-run here. **Closes when:** the cut starts at `updateForPass` (or the spec asserts the position of the block's opening
+relative to every `this.show` before it) and a mutant that wraps the block turns the spec red. **Source:** orfalch harvest as cited.
+
+### DX-CATALOG-SPEC-SANDBOX-LEAKS-ON-A-FAILED-LISTING — `createCandidateSandbox` takes its lane temp directory before its first assertion with no `finally` on that path, so a failed `git ls-files` leaves an empty directory — **OPEN** (small; pre-existing, measured twice by the reviewers)
+
+`Tools/generate-tooling-catalog.spec.mjs:142-153` makes the directory with `mkLaneTmp("catalog-index-mutant-")` (`:143`) and then asserts the staged listing succeeded (`:149-153`); a
+failure throws before the caller's `try ... finally { rmSync(sandbox.root, ...) }` (the callers' `finally` at `:1715-1717` begins after the call), so each failed listing leaves one
+empty `catalog-index-mutant-*` folder: 21 of them under the first reviewer's lane root before the buffer repair, and one from the second reviewer's mutant. The lane root is
+sweepable by `Tools/temp-hygiene.mjs`, and `WEBGPU_DEBUGGING_LOG.md:20875-20881` records the wider class (cleanup that cannot run when a process is killed), not this path. **Closes
+when:** the function removes its directory when any of its own assertions fails (a `try`/`catch` that removes and rethrows), with a case that makes the listing fail. **Source:**
+orfalch harvest `REVIEW_CRISSAEGRIM_MAIN-REDS-2_P2.md:113-116`; hithlum harvest `REVIEW_ROMENNA_NODE26-GATES_P2.md:125-127`.
+
+### NEW-KIT-RECON-STEP-RESIDUAL-PINS — six properties of the cloud reconstruction landing step are not pinned in Node: the settle count at three reads, the stage's run options, its argument validation, the literal define mask, a missing first statistics block, and the hard-coded budget — **OPEN** (probe-kit spec; surviving mutants and findings of the cx-tools lane)
+
+The step `pageStageCloudReconstruction` (`Tools/visual-regression/lib/landing-cloud-reconstruction.mjs`) is run by `stageLandingCell` with `{ deadlineMs: 60_000, maxFrames: 360,
+settleReads: 3 }` (`lib/landing-cell-stage.mjs:947-949`). (a) The settle counter resets on an unready read (`:164`), but the guard cases run with `settleReads` 2
+(`fixtures/landing-cloud-reconstruction-support.mjs:174`), where a decrement equals a reset, so the third reviewer's mutant `stable = Math.max(0, stable - 1)` survives
+(`REVIEW_NOIRINAN_CX-TOOLS_P3.md:155-161`; its case needs `settleReads` 3 and readiness on frames 1, 2, 4, 5 only). (b) The opt-in case of `landing-cell-stage-page-dials.spec.mjs`
+ignores the second argument of `evaluate`, so the stage handing `settleReads: 1` survives (`:162-165`; the Edge sheet's `stableReads` 3 catches it on a browser run, leg 2
+read 3). (c) The step's own argument checks throw `TypeError: cloud reconstruction: invalid <name>` (`:18-23`) and no spec has a case for them (`HANDBACK_BRILTHOR.md:84`).
+(d) The step keeps the define mask as the literal 196608 (`:129`, the page cannot import) while the fixture derives its mask from the engine's table through `lib/wgsl-variant.mjs`;
+a drift between the two shows only through the happy-path control, not through a source comparison (`HANDBACK_BRILTHOR.md:85`). (e) The step calls
+`CesiumDebug.cloudReconstruction(true)` on the first pass in which the cloud cache exists and throws "public activation not applied" at once when the answer is null, which
+`CesiumDebug.js:1159-1163` returns while the cloud statistics have no emission block yet (`:105-114` of the step); the two Edge invocations of leg 2 (leg-2 folder `EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:137-146`) and the 14 of leg 3 never hit it
+(`EDGE_RECEIPT_TUMHALAD_CX-CLOUD-3.md:138`), the timeline piece retries instead. (f) The budget is a literal in the stage while the pending-pipeline wait has overridable defaults
+(`lib/landing-cell-stage.mjs:229-233`; `HANDBACK_LEGOLIN.md:52`). None is a measured failure. **Closes when:** a case with `settleReads` 3 kills the decrement mutant; the opt-in case
+asserts the run options; each argument check has a case; the fixture's mask is compared with the literal or the literal is passed from Node; the first-pass null answer is retried
+or recorded as intended; the budget is overridable or recorded as fixed. **Source:** legolin harvest `REVIEW_NOIRINAN_CX-TOOLS_P3.md:153-165`, `HANDBACK_BRILTHOR.md:84-85`,
+`HANDBACK_LEGOLIN.md:52`, `EDGE_SHEET_CX-TOOLS.md:66-72`.
+
+### DX-KIT-RECON-MEDIUM-NO-OFF-TWIN-AND-NO-PIXEL-BAND — `E-RECON-medium` proves the renderer encoded reconstruction on three fresh reads, and nothing compares it with the same scene with reconstruction off — **OPEN** (probe-kit cell; the first reviewer's R-1, narrowed by the PASS RULE the lane added)
+
+The cell's pass rule is the stage's readiness record, the error gate and no capture while pipelines pend (`Tools/visual-regression/lib/landing-cell-table.mjs:298-310`); the
+evidence is CPU renderer statistics and cache mirrors, which show the march emitted and the resolve consumed, not that consumption changes or protects a pixel (the step's own header
+says so). The first reviewer asked for a reconstruction-off twin of the same rig and a pre-registered pixel band (`REVIEW_MORTHOND_CX-R38-R41-TOOLS_P1.md:92`), and the lane's Edge sheet
+leaves the on-against-off diff out until the seat registers a band (`EDGE_SHEET_CX-TOOLS.md:91-98`). The neighbouring `E-RECON-timeline` varies primary reuse, not reconstruction, and
+`DEFERRED_WORK.md:36395` names the arms' pixel difference on these pages only as "not attributed". **Closes when:** a rig or variant with reconstruction off exists, a band is registered before the
+run, and the cell records the on-against-off figure; or the readiness-only acceptance is ruled to be the cell's whole claim. **Source:** legolin harvest as cited.
+
+### DX-KIT-LANDING-HEADER-POINTERS-STALE — two kit headers point at the wrong place: `lib/cloud-probe-harness.mjs:101` names the old home of `pageReadPendingPipelines`, and `probe-landing-cells.mjs` does not list `E-RECON-medium` — **OPEN** (comments; two reviewers)
+
+`lib/cloud-probe-harness.mjs:101` says the in-page copy mirrors `lib/landing-cell-stage.mjs` `pageReadPendingPipelines`; since Batch 1678 the function lives in
+`lib/landing-pipeline-wait.mjs` and the stage only re-exports it (reachable, but the old home). The header of `Tools/visual-regression/probe-landing-cells.mjs` (the `@purpose` at `:4` and
+the CELLS list near `:49`) names `E-RECON-timeline` and the other opt-in cells and has no mention of `E-RECON-medium` (a search of the file for it finds nothing), though the cell table and
+the guide do. **Closes when:** both comments are corrected (`cloud-probe-harness-readiness.spec.mjs` pins the copy against the kit's reader, `:20`, `:262`, so the spec text is checked in the same change). **Source:** legolin harvest
+`REVIEW_ANDUNIE_CX-TOOLS_P2.md:246-248` and `:251-252`, `ROUND2_BRILTHOR.md:87`.
+
+### NEW-CLOUD-MARCH-COMPILE-ERROR-CONTEXT-ID — a cloud march pipeline that fails to compile logs without the context id and stays cached as null, so that variant is never requested again — **OPEN** (engine; Principle 3; found by reviewer Bruinen on the selected-emission unit, carried by the Codex cloud batch hand-back)
+
+`requestCloudMarchPipeline` writes `cache.marchPipelines.set(key, ready)` with `ready` null while the compile is pending
+(`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts:3420-3421`) and, if the compile rejects, its error branch only calls
+`console.error("Cloud march pipeline creation failed (${key}).", error)` (`:3439-3444`): the line names the pipeline key and carries no context id
+(Principle 3: `[CesiumJS:webgpu:ctx-xxxx]`), and the map entry stays null, so the key is not requested again until
+`destroyProceduralCloudResources` clears the map (`:6820-6821`). Main already did this; the Codex cloud batch adds one more request per frame to the same
+function (the warm emitting request of the active recipe, `:5316-5323`), so a rejected compile of that emitting key is now cached null the same way
+(reviewer Helevorn named the cost: one wasted compile per such recipe, bounded by the recipe space and released with the cache; the executor Esgalduin
+named the null entry as main's behaviour, not changed). Read at the tip; not reproduced with a rejected compile. **Closes when:** the log names the
+context id and the failure path is decided (retry after a bounded delay, or a recorded "never retried until destroy" with the reason), with a spec that
+makes the compile reject and reads the line and the map entry, and an inertness mutant. **Source:** Ascar folder `base/REVIEW_BRUINEN_CX-R37-SELECTED-EMISSION_P1.md:73` (R2),
+`HANDBACK_THALOS.md:68` (finding 4), `ROUND4_ESGALDUIN.md:146-147`, `REVIEW_HELEVORN_CX-CLOUD_P4.md:89-92`.
+
+### NEW-CLOUD-MARCH-SELECTED-DEFINES-NOT-RESET-ON-DESTROY — `destroyProceduralCloudResources` does not reset `selectedMarchDefinesHi` — **OPEN** (engine hygiene; nothing reads a stale value today)
+
+`destroyProceduralCloudResources` (`WebGPUProceduralCloudRenderer.ts:6775`) clears the march pipeline map, module cache and layout (`:6820-6823`: `cache.marchPipelines.clear()`,
+`cache.marchModules = null`, `cache.marchPipelineLayout = null`) and resets the weather, cache and request flags around them, but no line
+in the function assigns `cache.selectedMarchDefinesHi` (the field is declared at `:652`, initialised 0 at `:1456`, written only at `:3450`, read at `:5313`, `:5357`, `:5460`; a search of the
+file finds no other occurrence). The emitting request reads it only inside the same synchronous prepare that has just selected (`:5311-5313`), so
+nothing reads a stale value now (reviewer Bruinen's reading, repeated by the executor Thalos). **Closes when:** the destroy path resets it to 0, with a case in
+the cloud-march-features harness that destroys, re-prepares with a different ladder state and reads the first request, and a mutant that removes the reset.
+**Source:** Ascar folder `base/REVIEW_BRUINEN_CX-R37-SELECTED-EMISSION_P1.md:74` (R3), `HANDBACK_THALOS.md:68`.
+
+### NEW-CLOUD-SYNC-PIPELINE-COMPILES-ON-LADDER-UPGRADE — the cloud mask and shadow pipelines are rebuilt with synchronous `createRenderPipeline` on every march ladder upgrade, and the sky-cube and fog compute pipelines are created synchronously — **OPEN** (engine performance; the maintainer's load-fast direction; narrows `NEW-TIDEWATER-SYNC-COMPILE-CENSUS`, which holds the census and defers any conversion until numbers point)
+
+When the march ladder selects a new ready variant, `requestCloudMarchPipeline` sets `cache.maskPipeline = null` and `cache.shadowPipeline = null`
+(`WebGPUProceduralCloudRenderer.ts:3452-3455`); the next frame rebuilds them with `device.createRenderPipeline` inline, the shadow pipeline in
+`ensureShadowResources` (`:3644`, the call at `:3726`) and the mask pipeline in `ensureCloudMaskResources` (`:6668`, the call at `:6760`), both synchronous (a source read; neither goes
+through the async pipeline cache). So each ladder upgrade costs two synchronous compiles on the main thread. The Codex cloud batch's reviewers
+named it (Bruinen R4, Thalos finding 4) and the zero-coverage reviewer Anduin named the same class for the two compute paths whose text that unit changed:
+the sky-cube pipeline `device.createComputePipeline` (`Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts:2155`) and the fog pipelines (`WebGPUVolumetricFogResources.ts:271`, `:279`,
+`:284`, `:532`), while the density-moments bake and the spatial occupancy already use `createComputePipelineAsync` (`WebGPUCloudDensityMoments.ts:161`, `:166`,
+`WebGPUCloudSpatialOccupancy.ts:43`). Nothing was timed. **Closes when:** the two cloud pipelines move to the async cache with the request guard and keep the
+previous pair until the new one is ready (reviewer Bruinen's lead), or the census of `NEW-TIDEWATER-SYNC-COMPILE-CENSUS` shows the cost is small enough to leave, with
+the count per ladder upgrade recorded either way. **Source:** Ascar folder `base/REVIEW_BRUINEN_CX-R37-SELECTED-EMISSION_P1.md:75` and `:88-90`, `base/REVIEW_ANDUIN_CX-R36-ZERO-COVERAGE_P1.md:248-253`,
+`HANDBACK_THALOS.md:68`.
+
+### NEW-CLOUD-CX-PRIMARY-REUSE-OVER-SELECTED-UNPINNED — no spec passes `primaryReuseDefinesHi` and `selectedDefinesHi` together, so the priority the code comment states is pinned by nothing — **OPEN** (spec gap; reviewer Avallone's mutant M10 survived every spec; Batch 1682)
+
+`WebGPUCloudMarchFeatures.ts:27-31` says `selectedDefinesHi` takes priority over `preview` and the feature fields and that `primaryReuseDefinesHi` "in turn takes priority
+over it"; the renderer computes it so (`WebGPUProceduralCloudRenderer.ts:3364-3368`: primary reuse first, then `features.selectedDefinesHi ??`, then the recipe). The
+cloud-march-features harness builds a request with `primary` (`Tools/visual-regression/cloud-march-features.spec.mjs:199-201`) or, through the renderer's own statements it extracts (`selectedEmissionHarness`, `:1104`), with `selectedDefinesHi: cache.selectedMarchDefinesHi`,
+never both (the other mentions are the snapshot read `:411`, the primary-reuse mutant `:673-674`, the selector mutant `:1442-1443` and the call-text pin `:1611`); no caller in the engine passes both today
+(reviewer Avallone: "equivalent in the engine today"). The reviewer's mutant M10 (the selector given priority over primary reuse) was red nowhere. **Closes when:** one case passes both
+fields and reads the primary-reuse key, with the mutant red. **Source:** Ascar folder `REVIEW_AVALLONE_CX-CLOUD_P2.md:68` and `:151-153` (R-2), `REVIEW_ARMENELOS_CX-CLOUD_P3.md:90-92`.
+
+### DX-CLOUD-MARCH-FEATURES-SPEC-TYPED-STAND-INS — the cloud-march-features harness types two constants the engine derives, so a change of the emitted-depth slot or format would not move the spec — **OPEN** (spec hygiene; equal today; reviewer Bruinen's stand-in table)
+
+The harness that executes the renderer's preparation slice sets `CLOUD_MARCH_EMITTED_FORMAT: "rg32float"` (`Tools/visual-regression/cloud-march-features.spec.mjs:154`) and
+`const CLOUD_MARCH_EMITTED_SLOT = 1;` (`:1158`); the renderer reads the slot from the attachment contract (`WebGPUProceduralCloudRenderer.ts:209`, `:296`:
+`CLOUD_OWNED_ATTACHMENTS[CLOUD_MARCH_EMITTED_SLOT - 1].format`). The reviewer measured them equal to the contract (the DEPTH row, `WebGPUCloudReconstructionAttachments.ts`) and called them
+"typed, not derived". No line of the spec compares the typed values with the contract. **Closes when:** the harness imports both from the contract module, or one case asserts
+the typed values equal it, with a mutant that changes the contract row. **Source:** Ascar folder `base/REVIEW_BRUINEN_CX-R37-SELECTED-EMISSION_P1.md:43-44`.
+
+### NEW-CLOUD-DENSITY-WHOLE-EMPTINESS — the zero-coverage oracle certifies the coverage stage only; non-finite coverage and later density factors are not pinned — **OPEN** (spec and shader; the unit's own "Not covered" sentence)
+
+`cloudEffectiveCoverage` returns 0 for `coverage <= 0.0` and otherwise `max(c, lifted)` from `min`, `pow` and a divide (`packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl:206-215`); for a NaN coverage `coverage <= 0.0` is
+false, so the threshold may be NaN, `cloudCoverageGate`'s `threshold >= 1.0` is false and the builtin is called as before (`:218-221`; reviewer Anduin's reading, re-read here; not run). The new spec's
+stubbed noise, profile and erosion factors are finite by construction, so it certifies a zero stage, not an empty density, under negative or non-finite later factors
+(`Tools/visual-regression/cloud-zero-coverage-density.spec.mjs` with `fixtures/cloud-zero-coverage-density-support.mjs`). The unit's own log entry says so: "It does not certify whole-density behaviour under negative or singular erosion factors, nonfinite inputs, thin clouds or optical fidelity"
+(`migration_doc/WEBGPU_DEBUGGING_LOG.md:23880`, a record, not a work item). Not measured on a device. **Closes when:** a spec case with non-finite coverage and with negative
+profile or erosion factors states what the shaders do (and the shaders are changed if "empty" is the contract), with mutants. **Source:** Ascar folder `base/REVIEW_ANDUIN_CX-R36-ZERO-COVERAGE_P1.md:208-210` (R2), `:90-94`, `:175-179`.
+
+### DX-CLOUD-ZERO-COVERAGE-LOG-ENTRY-NITS — the zero-coverage log entry cites a dated draft URL and its Symptom paragraph still opens with a claim wider than the fog fact it then qualifies — **OPEN** (documentation; two reviewer advisories)
+
+`migration_doc/WEBGPU_DEBUGGING_LOG.md:23872` links the WGSL `smoothstep` builtin through a dated draft path (`https://www.w3.org/TR/2026/CRD-WGSL-20261106/#smoothstep-builtin`), which reviewer Avallone could not open offline
+(R-5; the undated `https://www.w3.org/TR/WGSL/#smoothstep-builtin` would not rot), and the same paragraph says "Every coverage gate was `smoothstep(threshold, 1.0, noise)`, so both edges were equal" before the sentences that
+exclude the cheap fog field (reviewer Armenelos R-7: true read whole; the first sentence could name the cloud-march and sky-cube gates as the landing message does). Both read at the tip. **Closes when:** both edits are made
+under the log convention. **Source:** Ascar folder `REVIEW_AVALLONE_CX-CLOUD_P2.md:161-162`, `REVIEW_ARMENELOS_CX-CLOUD_P3.md:98-100`.
+
+### NEW-CLOUD-CX-ZERO-COVERAGE-DEFECT-UNOBSERVED — the equal-edge `smoothstep` the repair removes has not been seen to change a pixel on any device: main reads the same frame as the clouds-off page at coverage 0, 1e-30 and -0.5 — **OPEN** (measurement owed; Batch 1682 landed on the WGSL specification and a Node oracle)
+
+The log entry says it: "No render was captured, so the visible effect of the undefined result on a device is not measured here" (`migration_doc/WEBGPU_DEBUGGING_LOG.md:23870`), and the executor Ascar:
+"The undefined-result symptom is derived from the WGSL specification, not observed on a device". Edge leg 2 then ran the zero-coverage cells on both arms. On `E-ZC-underside`, on every page and run of both arms, coverage 0, 1e-30 and -0.5 each changed
+0 px against the clouds-off page on run0 and run1 (band 0, `equalToControl` true), main included (receipt lines 80-84; verified by Dimrost, `VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:17`); `E-ZC-density` coverage 0 read 0 px against clouds-off on both runs of both arms, with the moments variant compiled
+(`ProceduralClouds bgra8unorm:1792`, receipt lines 85-87). So on the adapter of that run main's undefined result drew no cloud, and the repaired build's "empty sky" is equal to what main already drew: the leg shows the repair harms nothing and does not show it changes anything. The Node oracle's `smoothstep`
+stub returns 1 for equal edges, which reviewer Anduin calls harsher than typical hardware (`base/REVIEW_ANDUIN_CX-R36-ZERO-COVERAGE_P1.md:167-173`). The leg's reports do not name the GPU adapter (`DX-KIT-LANDING-REPORTS-NO-GPU-ADAPTER`). **Closes when:** a device or driver on which main's coverage-0 page differs from the clouds-off page is found and the repaired
+build equals clouds-off there, or the repair is recorded as resting on the specification and the Node oracle. **Source:** leg-2 folder `EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:80-87`, `VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:17-18`; Ascar folder `HANDBACK_ASCAR.md:57`.
+
+### NEW-CLOUD-CX-RECON-ARM-PIXEL-DIFFERENCE-UNATTRIBUTED — the two arms' frames on the reconstruction pages differ by 43 to 57 percent of pixels at tolerance 0 in every reading, and no same-arm repeat floor was taken — **OPEN** (measurement owed; five readings over three legs, each "not attributed")
+
+Leg 2: `E-RECON-timeline` TIP against BASE run0 changes 971,866 px (reuse-off) and 1,096,126 px (reuse-on) at tolerance 0 (18,277 and 18,738 at tolerance 48), and `E-RECON-medium` 986,338 px; the same page BASE reuse-off against BASE reuse-on changes 1,188,115 px (18,878 at 48); the executor's finding F7 reads "47-53 % of pixels ... (one run; no band)"
+(`EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:102-104`, `:151-152`, `:194`; the verifier recomputed 46.87 / 52.86 / 47.57 % and the scale figures, `VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:40`). Leg 3: 1,182,758 px on run0, 57.04 % (`EDGE_RECEIPT_TUMHALAD_CX-CLOUD-3.md:140`, `:186`; the leg's `bank/M1/T4/capture-manifest.json:66-67`); leg 3B: 890,350 px, 42.94 % (`EDGE_RECEIPT_RAUROS_CX-CLOUD-3B.md:91-92`, `VERIFY_GREYLIN_CX-CLOUD-3B.md:35`). Each executor reported it "not part of the row, not attributed";
+the registered rows do not judge pixels and no band exists for these pages. The legs kept five plain `E-RECON-medium` captures per arm (leg 3 B0-B4 and T0-T4) and the 3B captures; none of the receipts reads a BASE run of a page against another BASE run of the same page (the only same-arm figure is BASE reuse-off against BASE reuse-on, two different configurations), so whether the difference is the reconstruction's temporal run-to-run noise or a difference between the builds is not known. **Closes when:** a same-arm
+floor (five BASE runs against each other, the kit's tolerance-0 diff) is read beside the arm difference and the page gets a band, or the difference is attributed. **Source:** leg-2 folder `EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:102-104`, `:194`, `SUMMARY_TALATHDIRNEN_CX-CLOUD-2.txt:44`; leg-3 folder `lane-out/EDGE_RECEIPT_TUMHALAD_CX-CLOUD-3.md:186`, `lane-out/EDGE_RECEIPT_RAUROS_CX-CLOUD-3B.md:91`.
+
+### NEW-CLOUD-W5W6-E-W-MOVE-NOT-ATTRIBUTED-OR-JUDGED — the weather-on frames the wave moved are attributed to no unit and judged by no one, while the author's own record of the unit that moves them reads FAIL — **OPEN** (measurement and review owed; Batch 1669 landed as one batch, the packet's per-unit arms were not run)
+
+The packet pre-registered per-unit arms: TIP(3) against TIP(2) for 3481 "measured", TIP(5) against TIP(4) for 3487 "measured", the rest identity, among them TIP(6) against TIP(5) "3489 plane unread at default" (`LANDING_PACKET_W5W6.md:362-367`, arms from the nine round-2 unit trees of `w5w6/cut-r2-nine/NINE_BATCHES_R2.json`). The identity job ran two arms,
+BEFORE against the whole batch: the four weather-on `E-W` cells moved by 747,453, 739,809, 664,333 and 664,668 px (mean luma 146.394 to 145.228, 174.640 to 163.610, 46.765 to 75.904, 55.706 to 82.400), and the record says it "does not separate those two units, and it does not show that the units the packet pre-registers as identity there (3489's published top plane among them ...) leave the weather-on frames unchanged"
+(`migration_doc/DEFERRED_WORK.md:35576-35582`; the identity record is a `RECORD`, with no owed item). Unit 3487 changes the procedural values for every consumer ("`continuous` differs from `historical` in 48 of 54 digests", `REVIEW_MAIRON_P1.md:142-143`). Its author's own record of the visual state reads `"visual": {"status": "FAIL", "finding": "Full-globe cover has more regional irregularity,but flat grey/warm slabs,the sharp solar boundary against that flat field,low-orbit stipple and poor ground appearance remain", "noClaimOfOverallVisualFix": true}` (`units/3487-RESULT.json`, key `visual`),
+and the lane's performance-debt sheet says of the same unit "appearance is a measured E-W/E-D cell, not identity" (`w5w6/PF_DEBT_W5W6.md`, row 4; the row on main, `DEFERRED_WORK.md:35821-35840`, does not carry that sentence). No file on main records a judgement of the moved frames as better or worse. The job's two-arm shape rests on the maintainer's `R-2026-11-06-M1` (`DEFERRED_WORK.md:35568`), so a per-unit attribution is not owed by this row. **Closes when:** the four moved `E-W` frames are judged against BEFORE (better, worse, or accepted as the wave's intended change, with who judged) and the verdict is recorded beside the identity record.
+**Source:** Annatar harvest `LANDING_PACKET_W5W6.md:362-367` and `:44-51`, `units/3487-RESULT.json` (`visual`), `w5w6/PF_DEBT_W5W6.md` (row 4); `DEFERRED_WORK.md:35564-35582`.
+
+### NEW-CLOUD-W5W6-TOP-PLANE-VALUES-UNPINNED — the cloud-top plane the synoptic generator publishes with every field (unit 3489, a default move) is recorded by value only through population 0 of the independent-layers fixture, and no mutant has shown that this catches a moved model — **OPEN** (spec gap; the lane's worker finding, narrowed at the tip)
+
+The recorded model fixture holds, per case, only `coverage`, `type`, `baseMeters`, `densityBias`, `atmosphericBytes`, `marineBytes`, `packBytes`, `flowDisplacement` and `flowVelocity` digests (read from `Tools/visual-regression/fixtures/cloud-weather-synoptic-models.json`; its builder is `Tools/visual-regression/cloud-weather-worker.spec.mjs:198-209`). The vertical digests (`topMeters`, `verticalBytes`, `minimumBase`, `maximumTop`, `:213-218`)
+are used only to compare the worker's result with the main thread's (`:340`). `cloud-weather-vertical.spec.mjs` builds its own inputs (`:54-76`, `:113-114`) and tests packing and determinism (`:190-202`), and `cloud-weather-layers.spec.mjs` records every population's `topMeters` (fixed-cell samples, sum, minimum and maximum for the seeds `layers`, `other` and `front-7`: `:369-376`, `:411-443`, `fixtures/cloud-weather-layers-values.json:101` and on) and asserts that population 0's plane equals the field's, whose plane equals the ordinary field's (`:312-323`, seed `layers`), so the generator's plane is recorded by value there, indirectly and on the layers path; no mutant that moves the top-plane model has been run against it. The worker Smeagol said it in round 1: an engine change to the top-plane model that keeps both paths consistent "would not be caught by this file". With the vertical dial off the march does not read the plane;
+with it on the plane sets the shell bounds. **Closes when:** a mutant that moves the top-plane model is run against `cloud-weather-layers.spec.mjs` and turns it red (the row then closes on that record), or the generated plane is recorded for the model fixture's cases (digests or sampled values) with that mutant red. **Source:** Annatar harvest `w5w6/workers/SMEAGOL.md` (the `b6` paragraph of "What each version asserts").
+
+### NEW-CLOUD-W5W6-POPULATIONS-RENDERER-INTERACTIONS-UNPINNED — no spec drives the four places where the populations dial switches other cloud features off, nor that the populations dial alone requests the vertical plane — **OPEN** (spec gap; the lane's worker finding; by design behaviour, not a defect)
+
+In `prepareCloudFrameAndEncodeMask` the populations dial implies the vertical plane (`verticalEnabled = (config.cloudVerticalWeather === true && !multiDeckOn) || populationsEnabled`, `WebGPUProceduralCloudRenderer.ts:4352-4355`) and turns four other paths off with `!cache.weatherPopulationsRequested`:
+the density-cache material (`:4990`), the weather volume bounds (`:5065`), directional lighting and the deep-shadow cache (`:5201`) and the lighting budget (`:5286`); the unit's author records the intent ("local/spatial/resident performance caches are not yet population-aware and remain detailed fallback", `units/3494-RESULT.json` `limits`). The mask-order harness drives the populations define and the shell bounds (`webgpu-cloud-godray-current-mask-order.spec.mjs:4355-4382`, `:4476-4546`);
+a search of the specs for `weatherPopulationsRequested` or `populationsRequested` finds them only there, in `cloud-march-features`, `cloud-weather-march-features`, `cloud-weather-layer-consumers` (one each) and in landing-cell specs, and none asserts the four exclusions or that `weatherVerticalRequested` follows the populations dial alone (the vertical assertions at `:4297-4318` use the vertical dial). The worker Gollum recorded both as untested in round 1. **Closes when:** a renderer frame case per exclusion and one for the implied plane, with inertness mutants. **Source:** Annatar harvest `w5w6/workers/GOLLUM.md` (open problems 1 and 2).
+
+### NEW-CLOUD-W5W6-WEATHER-WORKER-BUNDLE-PULLS-TASKPROCESSOR — the cloud weather worker's bundle contains the main-thread `TaskProcessor` and its imports, and nobody has judged its size or side effects — **OPEN** (build review; the packet's open question 4, answered on load only)
+
+`Workers/createCloudWeather.js` imports `Scene/Weather/WeatherTexPacker.js` and `TensorCloudMaterialFlow.js` (`:3-4`), and both import `scheduleWeatherTask` from `WeatherTaskProcessor.js` (`WeatherTexPacker.ts:28`, `TensorCloudMaterialFlow.ts:1`), which imports `Core/TaskProcessor.js` (`WeatherTaskProcessor.ts:1`). The scout bundled the worker in memory with the build's esbuild options: 0 errors, 54 inputs, 196,376 bytes, pulling `Core/TaskProcessor.js`, `Resource`, `buildModuleUrl`, `FeatureDetection`, `Fullscreen` and `Event` into the worker bundle
+("a size/side-effect question for the lead (the worker never calls it)", `SCOUT_OIKEROI.md:99`); reviewer Mairon loaded a copy of the built worker with no `window` or `document` and it posted a field ("settles open question 4 on load, not on size", `REVIEW_MAIRON_P1.md:157-159`). The packet's open question 4 asks for a size and side-effect review and none was recorded; the figures are the scout's, from the lane's tip, not measured on a build of main. **Closes when:** the built `createCloudWeather.js` is measured on a main build (size, input count) and the worker is either given a TaskProcessor-free entry for the packer and flow code or the cost is recorded as accepted.
+**Source:** Annatar harvest `SCOUT_OIKEROI.md:99`, `REVIEW_MAIRON_P1.md:157-159`, `LANDING_PACKET_W5W6.md` section 7 (item 4).
+
+### DX-CLOUD-W5W6-TRANSITION-FLOW-BUFFER-SHARES-LABEL — the weather transition's previous flow buffer carries the same GPU label as the current flow buffer, so a label-based teardown read cannot tell them apart — **OPEN** (observability; reviewer Mairon, round 2)
+
+`WebGPUCloudWeatherTransition.ts` owns its flow through `new CloudMaterialFlowResources()` (`:17`), which labels every buffer it creates "Cloud geographic material flow" (`WebGPUCloudMaterialFlow.ts:126`), the label the current flow already carries; only the previous weather texture is labelled apart ("Cloud previous weather snapshot", `WebGPUCloudWeatherTransition.ts:54`). The E-T owner-label reads the kit makes (`--owner-labels`) match by label, so a leaked previous flow buffer would read as the current one. **Closes when:** the transition's flow buffer takes its own label (or the flow resources take one as an option) with a spec that reads both labels. **Source:** Annatar harvest `REVIEW_MAIRON_P2.md:229-231`.
+
+### NEW-CLOUD-W5W6-OVERSIZE-FILES-TOUCHED-UNRECORDED — Batch 1669 grew `CloudVolumetrics.js` (1,152 to 1,292 lines) and the cloud renderer (6,663 to 6,971) and recorded neither in the size record, and the decomposition row's counts are stale — **OPEN** (records; Principle "Size", `CLAUDE.md`)
+
+`git show b142b73c19` changes `packages/engine/Source/Scene/CloudVolumetrics.js` (+140, five dials) and `WebGPUProceduralCloudRenderer.ts` (394 lines changed; 6,663 before, 6,971 after, counted from the two blobs), and does not touch `migration_doc/ES6_MODERNIZATION_STATUS.md`; a search of that file for `1669`, `W5+W6`, `CloudVolumetrics` and `CloudWeather` finds nothing. The only cloud entries there are the 2026-09-12 resolver row and the Batch 1682 section "Cloud march recipe composition" for the renderer (`ES6_MODERNIZATION_STATUS.md:184`, `:216-221`). `C13-N35` ("Decompose the two oversize cloud files") names `ProceduralClouds.wgsl` 3,157 and the renderer 5,570 lines
+(`DEFERRED_WORK.md:1835-1839`); at the tip they are 3,188 and 6,999 (`wc -l`), and `CloudVolumetrics.js`, a config class that is not a math class, is 1,292. Reviewer Mairon named the decomposition as "the WAVE DX decomposition row, not this batch" and recorded the two files as touched functionally
+(`REVIEW_MAIRON_P2.md:283-285`). This batch adds the tip's counts to `C13-N35` where it stands; the decomposition of the renderer stays that row's. **Closes when:** the ES6 status records Batch 1669's functional touches of both files with their counts, and `CloudVolumetrics.js` is named in `C13-N35` or a row of its own with an owner, or a ruling defers them. **Source:** Annatar harvest `REVIEW_MAIRON_P2.md:283-285`; `git show --stat b142b73c19`.
+
+### DX-CLOUD-W5W6-NO-CHANGES-MD-NOTE — `CHANGES.md` carries no entry for the five public cloud weather options Batch 1669 added — **OPEN** (documentation; the lane wrote the text for the seat to place)
+
+The lane's prepared appends include a "CHANGES.md release note (R-4; the seat words and places it)": four core dials `cloudWeatherWorkers`, `cloudWeatherInterpolation`, `cloudWeatherTransitionSeconds` (1-300, default 30) and `cloudVerticalWeather`, the experimental `cloudIndependentWeatherLayers`, and "the seeded procedural weather forms continuous synoptic cloud structures, so its values differ from earlier releases"
+(`w5w6/cut/APPENDS_BY_BATCH.txt`, "CHANGES.md release note"). Records round 15 carried the other appends (`DEFERRED_WORK.md:35792-35897`, `FEATURE_INVENTORY.md:753-757`) and this one is in no file: a search of `CHANGES.md` for `cloudWeatherWorkers`, `cloudWeatherInterpolation` and `cloudVerticalWeather` finds no match, and its newest fork section is dated 2026-07-16.
+The value change of 3487 is a behaviour change for every procedural-weather consumer. **Closes when:** the entry is written and placed (or the seat rules fork options need none). **Source:** Annatar harvest `w5w6/cut/APPENDS_BY_BATCH.txt`.
+
+### DX-KIT-CX-TOOLS-SHEET-DEVICELOST-NEVER-FALSE — the Edge sheet that accepts `E-RECON-medium` expects `record.gate.deviceLost` to be `false`, the record carries `null` on a page with no device loss, so the sheet read to the letter fails every healthy page — **OPEN** (kit sheet text; the leg-2 verifier's D3, which the receipt did not point out; filed from review pass 1's sweep)
+
+The sheet's row for the page's gate reads "`record.gate` | `errorCount` 0, `deviceLost` false" (Ascar folder `EDGE_SHEET_CX-TOOLS.md:62`), and its rule says "Any other value is a
+FAIL of the cell, recorded with the value; it is never re-scored" (`:73-74`). The landing probe writes the gate as `deviceLost: gate.deviceLost`
+(`Tools/visual-regression/probe-landing-cells.mjs:660`), and `collectGateErrors` returns `deviceLost: (string|null)` (`Tools/lib/webgpu-error-gate.mjs:144-156`), the gate state
+starting at `null` (`:61`): the field is `null` while no device was lost and a string once one was, never the boolean `false`. The probe's own spec builds healthy pages with
+`deviceLost: null` and a lost one with a string (`Tools/visual-regression/probe-landing-cells.spec.mjs:236`, `:252`). Leg 2 read `gate errorCount 0, deviceLost null` on both arms of
+`E-RECON-medium` and its receipt scored the cell PASS (`EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:145`); its verifier saw the literal difference, noted that `null` is the kit's no-loss value on
+every page in the bank and that `no-unexpected-device-loss` was true, and left the verdict as it was (`VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:47`, D3). An executor that applies the sheet to the
+letter would score a green page FAIL. The sheet is a lane file (the legolin harvest's copy and the Ascar folder's copy have the same bytes), and `DX-KIT-CX-EDGE-PIECES-SHEET-FIELD-NAMES`
+(`DEFERRED_WORK.md:36274`) is the same class for the other sheet. **Read at the tip; no run was made, and the leg-2 reading is the leg's, not re-derived.** **Closes when:** the sheet
+says `deviceLost` is `null` when no device was lost (and the loss reason when one was), or the landing record carries the boolean the sheet names, with the landing-cell spec pinning the
+shape of a healthy page's `gate`. **Source:** Ascar folder `EDGE_SHEET_CX-TOOLS.md:62` and `:73-74`; leg-2 folder `VERIFY_DIMROST_CX-CLOUD-EDGE-2.md:47` and
+`EDGE_RECEIPT_TALATHDIRNEN_CX-CLOUD-2.md:145`.
+
+### NEW-PROBE-CAPTURE-SEAM-RULE-SEES-PROBE-TEXT-ONLY — the six pinned weather legs (five probes and `probe-weather-wcs.mjs`, which runs the edr-mock sweep) bank frames that a shared pin harness reads with no device-liveness check, and fleet rule I2 cannot see it because it scans only probe file text — **OPEN** (probe kit; Moria's F4, narrowed by Taur and never filed)
+
+The harvest of the weather family (lane Moria) filed this as its F4; Taur narrowed it and filed nothing. The six pinned legs (`probe-weather-channels.mjs`, `-edr-mock.mjs`, `-ingest.mjs`, `-metar.mjs`, `-seam-poles.mjs`, and `-wcs.mjs`, which runs the edr-mock probe's `sweepDescriptor`, `probe-weather-wcs.mjs:93-96`; Moria's F4 says six) take
+their frames from the pin harness's page-side `capture(julianDate, wantPng)` (`Tools/visual-regression/lib/weather-probe-pinning.mjs:736-754`), which renders and freezes the PNG in one task and asks the page nothing about its WebGPU device
+(a search of that file for `deviceLost`, `gateArmed` and `__webgpuGate` finds nothing). Each probe then banks the data URL with `bankPngCapture(..., { outputDirectory, captures, url })` and no `liveness` option
+(`probe-weather-channels.mjs:664`, `probe-weather-edr-mock.mjs:534`, `probe-weather-ingest.mjs:558`, `probe-weather-metar.mjs:816`, `probe-weather-seam-poles.mjs:668`), so each capture record says `liveness.state: "unread"`
+(`Tools/visual-regression/lib/probe-runtime.mjs:607`; Taur's plan notes say the same, `edge-job-plan.json`, the six weather entries that carry "Moria F4", at `:912`, `:930`, `:948`, `:966`, `:984` and `:1002`). A lost device therefore reaches these legs only through `collectGateErrors` and the `clean` gate (exit 1, for example `probe-weather-channels.mjs:652`),
+not as a refusal that stops banking, as `captureElement` does (`lib/probe-runtime.mjs:520-521`, `throwIfDeviceLost`). Fleet rule I2 does not see it: `outOfSeamCaptureSites` reads only each probe's own source for `.screenshot(` and `.toDataURL(`
+(`Tools/visual-regression/probe-fleet-contract.spec.mjs:2866-2874`, `captureSeamFindings` `:2899-2925`, the test `:2945`), and the five probes' own text holds those words only in comments (`probe-weather-channels.mjs:171`, `probe-weather-seam-poles.mjs:117`), so
+they are neither offenders nor on the owed list (`CAPTURE_SEAM_OWED`, `:2876-2893`). Read at the tip; no run was made, and the claim that a lost device banks the last frame is the Moria packet's (`captureElement`'s own header says the canvas keeps answering with the last frame it drew, `probe-fleet-contract.spec.mjs:2856-2864`).
+**Closes when:** the pin harness's `capture()` reads the same-task `{gateArmed, deviceLost, frameNumber}` and the five probes pass it to `bankPngCapture` (which already accepts it), and rule I2 either follows imported harnesses or names a sanctioned seam for same-task captures,
+with a spec case that goes red when the liveness read is removed. **Source:** `cesium-webgpu-worker-archive/lanes-2026-09-26/harvest-weather/LANDING_PACKET_MORIA.md:161`; legolas folder `sources/taur/LEDGER_TAUR.md:28-30`, `sources/taur/LANDING_PACKET_TAUR.md:61-64`.
+
+### NEW-C13-42A-2-LIST-OMITS-THE-HARVESTED-FAMILIES — `C13-42a-2` names eighteen probes without a `workBudgetMs`, and nineteen more probes of the probe-kit harvest, all in the edge-job plan, have none either — **OPEN** (probe kit; the plan's ten clustered notes send these budgets to `C13-42a-2`)
+
+`NEW-C13-42-LEGACY-PROBES-NOT-ON-THE-LIFECYCLE (C13-42a-2)` (`DEFERRED_WORK.md:137-157`) lists eighteen probes that import `runProbe` and declare no `workBudgetMs`, and says each gets a budget sized from a measured run. Counted at the tip with a script that reads
+`Tools/visual-regression/probe-*.mjs` (not the specs): 90 declare `@runtime lib/probe-runtime.mjs`; 52 of them contain `workBudgetMs` and 38 do not (a text match, so a probe that mentions the word in a comment counts as having it, and the 38 is a lower bound). The eighteen of the row are all still among the 38.
+The other twenty are not in the row: `probe-clustered-{demo-scene,dispatcher,lights-resize,litmat,matsweep,multifrustum,per-frame,phong,visible,zero-work-route}.mjs` (ten), `probe-globe-{bindgroup-cache,clippoly-geodetic,default-limits,effects-handle-toggle,pick-h44,polar-stretch,translucency,underground}.mjs` (eight),
+`probe-polar-multi-plain.mjs` (one), and `probe-weather-wcs.mjs`, which reaches `workBudgetMs` through `sweepDescriptor` of the edr-mock probe (`probe-weather-wcs.mjs:93,96`; `probe-weather-edr-mock.mjs:481`) and so is not an omission. That leaves nineteen. Twenty of the 60 entries of `Tools/visual-regression/edge-job-plan.json` run them (clustered 10, globe 8, polar 2),
+and the eighteen clustered and globe entries carry the note "no workBudgetMs declared" (the ten clustered notes add "(C13-42a-2: size from this run)", the eight globe notes "(size from this run)"; counted with `node` over the plan: 18, 10 and 8); the polar probe's two entries carry no such note. The row's own count would close at eighteen and leave these nineteen on the pre-adoption path (no `scope`, no derived deadline). The runner records the receipt `elapsedMs` per entry
+(`elapsed.json`), which is the measurement the row asks the budget to be sized from. **Read at the tip; no probe was run.** **Closes when:** `C13-42a-2` names these nineteen (or a row of their own does), and each declares `workBudgetMs` from a measured run of the plan (see `NEW-EDGE-JOB-PLAN-FIRST-FULL-RUN-OWED`),
+with the spec that governs the declaration shape kept green. **Source:** legolas folder `sources/taur/DRYRUN_TAUR.txt:29-64` (the clustered and globe notes); `sources/taur/LEDGER_TAUR.md:20-21` (GAP 10 "closed only when phase B declares the budgets from a real job"); `sources/taur/LANDING_PACKET_TAUR.md:475-482` (N1).
+
+### NEW-EDGE-JOB-PLAN-FIRST-FULL-RUN-OWED — the 60-entry edge-job plan has run through the runner for two entries only, and the plan's notes say the instruments of five families changed (the polyline note: the first run "RE-BASELINES the instrument") — **OPEN** (probe-kit measurement owed; the seat's Edge job, named by Taur and tracked on no row)
+
+The Taur packet ends its Edge leg with "(The full job is the seat's Edge job.)" (`LANDING_PACKET_TAUR.md:175`), and the lane's ledger closes Andros GAP 5 "for the runner and plan; the first live run is the seat's Edge job" (`LEDGER_TAUR.md:10-11`). The live runs on record are the two Edge receipts of the legolas folder: `wgs84/plain` and `wgs84/modes`, 2 of 2 entries,
+runner exit 0, in the round-4 smoke (`edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:49`) and in the first-contact job (`edge/first-contact/_lane-out/EDGE_RECEIPT_EOWYN_STRAYS.md:34-39`, step 4), which also ran `probe-voxel-pick.mjs` by hand with `--output` (step 2). Neither receipt shows another plan entry run through the runner. The plan's notes for five families say what that first run is: polyline, "first run RE-BASELINES the instrument (D-D: Node reads of a stripped element capture; 90 s waits now apply)"
+(10 entries); polar, "instrument changed vs 2026-07-02 ... record both rules' parity figures" (the first entry; the second reads "AFTER frames for the sheet's 18 frame rigs"); clustered, "D2: element capture after STRIP_WIDGETS_SOURCE, fresh context per capture" (10); globe, "D4: element capture instead of in-page drawImage" (8); cloud, "this leg cannot be byte-identical to a pre-routing run" (6)
+(counted with `node` over `edge-job-plan.json`: 10, 1, 10, 8, 6). One of the plan's entries is also a standing owed leg of another row: `polyline/taa-velocity` is "AR-752 owed leg (--runs 3, cells C/D/E smear ratios)" (`DEFERRED_WORK.md:18737`, `:18844`), and `NEW-C13-42A-2-LIST-OMITS-THE-HARVESTED-FAMILIES` needs the run's `elapsed.json` to size budgets. No row says the plan as a whole has not run; the instrument re-baseline that Andros GAP 11 asked to be "tracked as data" has only the plan's notes.
+**Read from the receipts named; nothing was run, and a run of one of these probes on another occasion (the cloud legs of the Codex batch, for example) is not counted here.** **Closes when:** the job (or each family's slice of it) has run on a served build with the runner, each family's `INDEX.md` and `elapsed.json` are banked, the verdicts are read verdict-by-verdict against the earlier banked readings, and the five families' first readings on the changed instruments are recorded as their new baselines (the polar note asks for both rules' parity figures; the ledger section is the seat's, `LEDGER_TAUR.md:22-23`).
+**Source:** legolas folder `sources/taur/LANDING_PACKET_TAUR.md:174-175`; `sources/taur/LEDGER_TAUR.md:10-11` and `:20-23`; `sources/taur/DRYRUN_TAUR.txt:1-27` (polar and polyline), `:29-64` (clustered, globe), `:87-98` (cloud).
+
+### DX-DEBUGGING-GUIDE-METAR-ROW-STATE-AT-HEAD-STALE — the `probe-weather-metar.mjs` row of `DEBUGGING_GUIDE.md` still opens "RED 3/3 AT HEAD" and tells the reader to read the ledger row before diagnosing, which that row records as resolved — **OPEN** (documentation; Moria's F7, never filed)
+
+`migration_doc/DEBUGGING_GUIDE.md:971` opens "⚠ RED 3/3 AT HEAD — read `C13-GATE-B-METAR-CHANNELS-NO-EFFECT` in DEFERRED_WORK.md BEFORE diagnosing anything here" and carries "STATE AT HEAD (Batch 860 acceptance): RED 3/3 ... Gate 4 measures `sum|ch1-ch0| = 0.0019`".
+The ledger row it points at reads "RESOLVED 2026-08-07 (Batch 866)": gate 4 was re-aimed and measured at 0.1469 against the unchanged 0.04 bar, no engine defect existed (`DEFERRED_WORK.md:5328-5330`); the campaign queue records the same (`QUEUE_2026-07-23_CAMPAIGN13.md:933`, `:1446`), and the edge-job plan carries the 0.1469 in its `weather/metar` note (`edge-job-plan.json:966`).
+A reader of the guide row is told the gate is red at head and the ledger row unresolved; the ledger row's first paragraph says resolved (an older "Status: OPEN / BLOCKING" paragraph of the same row follows it, `:5332`), and the campaign queue closes `C13-GATE-B` at Batch 866. Read at the tip; the probe was not run. **Closes when:** the guide row drops "RED 3/3 AT HEAD" and the Batch 860 state sentence, or dates them as the state before Batch 866 and states the resolved reading. **Source:** `cesium-webgpu-worker-archive/lanes-2026-09-26/harvest-weather/LANDING_PACKET_MORIA.md:167`
+(F7); legolas folder `sources/taur/DRYRUN_TAUR.txt:106` (the `weather/metar` note that cites F7).
+
+### NEW-VOXEL-PROBES-VERDICTS-IGNORE-DEVICE-ERRORS — seven of the eleven voxel probes read their page's device errors and device loss into the result and score neither, so a WebGPU validation error or a lost device cannot turn their verdict red — **OPEN** (probe; the plan's own note "device errors are ungated (D2)")
+
+Each voxel probe opens its page through `lib/voxel-probe-page.mjs`, whose `voxelPageErrors` returns `{consoleErrors, deviceErrors, deviceLost, chromeRemoved}` from the error gate (`Tools/visual-regression/lib/voxel-probe-page.mjs:203-214`). At the tip four probes score `deviceErrors`
+(`probe-voxel-cell-pick.mjs:889`, `probe-voxel-pick.mjs:412-413`, `probe-voxel-pick-logdepth.mjs:397-398`, `probe-voxel-refined-pick.mjs:418-419`). The other seven never name `deviceErrors` or `deviceLost` (`grep -c` gives 0 for both in each of `probe-voxel-cylinder`, `-ellipsoid`, `-megatexture`, `-octree-l3plus`, `-octree`, `-parity` and `-user-customshader`),
+and where they score errors the clause is console errors only (`probe-voxel-octree.mjs:474-481`, `probe-voxel-octree-l3plus.mjs:440-442`, `probe-voxel-megatexture.mjs:651` and `:696`, `probe-voxel-parity.mjs:529-535` and `:585-590`, `probe-voxel-user-customshader.mjs:244-250`; `-cylinder` and `-ellipsoid` name no error list in their text at all).
+`probe-voxel-parity.mjs:17` promises "Zero device / console errors on both backends" and its clause reads `no console errors`. Taur's plan carries "device errors are ungated (D2)" on all eleven voxel entries (`edge-job-plan.json`, `voxel/*`; counted with `node`: 11), which overstates for the four that gate; no row on main names this
+(`grep` of `DEFERRED_WORK.md` for the voxel probes and device errors finds only the cell-pick acceptance at `:11476`). Read at the tip; no probe was run, and the source decision D2 is the voxel harvest's, which this sweep did not read. **Closes when:** each of the seven scores `deviceErrors` and `deviceLost` in a claim (`probe-voxel-pick-logdepth.mjs:397` scores `deviceErrors` that way; none of the eleven names `deviceLost`, `grep -c` 0 in each, so the four that gate device errors do not score a lost device either),
+with an inertness mutant per probe or one over the shared claim, and the plan's voxel notes keep the sentence only where it is true. **Source:** legolas folder `sources/taur/DRYRUN_TAUR.txt:65-86`.
+
+### Notes (rows batch 16b; no new ids beyond the headings above)
+
+- **Corrected where they stand (stale facts the sweep showed; the line count of the file above this section is unchanged):**
+  `DX-96` (`DEFERRED_WORK.md:853-855`) read OPEN, but Batch 1652 (`f52ff6bef5`) repaired the crash; its status now says CLOSED with the
+  lines that show it, and the guide's seven sentences are `DX-KIT-GUIDE-HAND-TEXT-STALE` above. `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`
+  (`:35198`) read OPEN, narrowed, with "five" W4 shadow entries; Batch 1673 (`dd1eb3d1e8`) closed it and there are six; the heading and
+  the last paragraph now say so, and `CAMPAIGN_STATE.md:957` and `:982` name the closure. `NEW-CLOUD-W4-PROBE-RUNTIME-SIZE` (`:35271`)
+  gains the tip's count, 1,140 lines. `C13-N35` (`:1839`) gains the tip's counts, 3,188 and 6,999 lines. `DX-KIT-LANDING-STAGE-HEADROOM`
+  (`:32815`) gains the tip's 983 lines. `NEW-CLOUD-CX-SELECTED-EMISSION-DEFECT-UNREACHED` (`:36237`) said main's one incoherent emit request
+  was "absent on the tip", leg 2's reading of round 3; it now adds leg 3's reading of the landed round-4 bytes (one such entry on every
+  page-run of both arms, no finding). `DX-VERIFY-PACKAGE-SMOKE-RED-AT-SEAT` (`:31966`) read OPEN and the lead left it for a run at the
+  seat; the seat made the runs at `eaf01cbf7f` (Node 26.13.1, npm 12.2.1): the spec alone, 9 tests passing; the whole `test-build-infra` key,
+  exit 0 with 305 tests passing; and a dry-run pack of a throwaway fixture, which prints an object keyed by the package name. The row is
+  CLOSED by Batch 1679 (`150a7f68bc`), in its heading and in its last sentences.
+- **The four repairs the reviews of rows batch 16a left** (`SEAT_RECORD_2026-11-13.md:238`), made in their rows: `NEW-EDGE-JOB-EXIT0-NO-RECEIPT`
+  cites the elapsed-time read at `edge-job-runner.mjs:554-557`; `NEW-FRESHNESS-CHECK-COST-UNMEASURED` names `REVIEW_HAMA_FRESHNESS_P2.md:428-429`
+  as the pass-2 figure's source; `DX-KIT-ENTRY-GUARD-LINK-PATH` says that 46 is round 4's tree's count and gives the tip's; and
+  `DX-KIT-MERGE-REPORTS-CHAIN-DUPLICATES-RUNS` says that the probe header's explicit command is A1's.
+- **One row from two sweepers (duplicates merged):** Needlehole's `NEW-CLOUD-CX-ZERO-COVERAGE-CELLS-CANNOT-READ-ALPHA-NAN-CUBE-GATE-WEATHER` is
+  the four rows `DX-KIT-CLOUDS-IN-REFLECTIONS-NO-PAGE-SWITCH`, `DX-KIT-CLOUD-TARGET-NAN-INF-NOT-READABLE`, `DX-KIT-CLOUD-ALPHA-NOT-READABLE` and
+  `DX-KIT-WEATHER-MAP-ZERO-TEXELS-NO-CELL`; `NEW-CLOUD-CX-RECON-DEVICE-LOSS-NO-DIAL` is `DX-KIT-DEVICE-LOSS-WITH-PENDING-VARIANTS-NO-CELL`;
+  `NEW-CLOUD-CX-FOG-CHEAP-GATE-NEVER-RUN-IN-BROWSER` is `NEW-KIT-A8-FOG-ROW-NEVER-REACHES-THE-CHANGED-FOG-PATH`. Their sources are added to the
+  kept rows.
+- **Not filed, with the reason:** a RUNNERS file that names a quarantine key as a plain `RUN:` line is "a rule, not a row", owed to the
+  seat's kit and seat duties (`SEAT_RECORD_2026-11-13.md:239`), a governance edit outside this file. The update-count spec's census scope
+  (`cloud-weather-update-count.spec.mjs:136-141`) guards what pass 1 asked for, and its reviewer asked no change (Annatar harvest
+  `REVIEW_MAIRON_P2.md:59-61`, `:283-285`). The seat-record premise "seven paths in both patches" (dorlomin harvest
+  `round4/REVIEW_BOROMIR_TAUR_P2.md:118-121`) is a seat-record line, not a row. The per-build hashing cost (linwe harvest `LANDING_PACKET_ARAGORN.md:140`)
+  is the measurement family of `NEW-FRESHNESS-CHECK-COST-UNMEASURED`. Reviewer-proven limits and equivalences (linwe harvest
+  `ROUND4_SARNFORD.md:84-94`, findings 1 to 3: the call order is pinned whatever the error shape; `REVIEW_IANTIAUR_FRESHNESS_P7.md:149`;
+  `REVIEW_ANDRAM_FRESHNESS_P8.md:128-138`) and the packet's "watch builds stamp nothing, so the next `gulp test` rebuilds once (safe
+  direction)" (`LANDING_PACKET_ARAGORN.md:173`) are not rows. Pass 5's two rows are closed at the tip: the gulpfile comment reads "Here a
+  fresh lane is not rebuilt" (`gulpfile.js:997`), and the succeeding `inject: "present"` rows that see a stamping wrapper exist
+  (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:684-695`; what remains is `NEW-BUILDWATCH-IIFE-INJECT-DELETED`).
+- **Already on main, not filed again (by id):** Taur: `NEW-EDGE-JOB-EXIT0-NO-RECEIPT` (pass-2 R-3, rows 20 and 21),
+  `DX-EDGE-JOB-CUSTOM-PLAN-ERROR-EXITS`, `NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN`, `-FAMILY-REPEAT`, `-RECORD-NO-COMPLETION-MARK`,
+  `NEW-EDGE-JOB-MEASURED-HARNESS-HALF-UNSCOPED`, `DX-EDGE-JOB-PLAN-PORT-PINNED`, the Edge smoke's F1, F3, F4 and F5 rows (F2 was taken in round 5), `DX-KIT-ENTRY-GUARD-LINK-PATH`,
+  `DX-KIT-PARSE-TIME-REFUSAL-NO-FILE` (`:34988`), `NEW-NODE26-STRIP-TYPES-TRANSFORM`. Freshness: the eleven rows of rows batch 16a (`:36080-36204`) and its Notes.
+  Codex cloud batch: `NEW-CLOUD-CX-PRIMARY-REUSE-NOT-EXERCISED`, `-SELECTED-EMISSION-DEFECT-UNREACHED`, `-TWO-VIEWS-NO-RIG`, the leg-2 rows of
+  16a, `NEW-W3-QUARANTINE-PINS-STALE`. W5+W6: the wave's rows of records round 15 (`:35792-35897`). Node 26: `DX-HOMELESS-SPECS-RED-AT-HEAD`.
+- **Closed in the lanes, not filed (no file on main names their ids):** Taur's `DX-KIT-JOBDIR-DOTDOT-UNPINNED`, `DX-KIT-SPEC-MUTANT-AT-LOAD`,
+  `DX-EDGE-RUNNER-INFRA-IDS` (its additions half is filed above), `DX-EDGE-RUNNER-REFUSAL-EXIT-UNPINNED`; the Codex cloud batch's
+  `NEW-CLOUD-EMIT-FULL-FAMILY-SERIALIZED` (the warm request, `WebGPUProceduralCloudRenderer.ts:5316-5323`, measured by leg 3).
+- **Files no sweeper of the lane read whole** (the lead filed nothing from them): the patches, module diffs, logs, TAP output and banked images of every
+  harvest; the freshness lane's briefs P4 to P8, R6 and R8 (keyword scan) and its reviewer sub-folders; `DESIGN_AELINUIAL.md` outside sections
+  0, 4.1 and 13; the Codex cloud lane's briefs and `EDGE_SHEET_CX-TOOLS.md` (keyword scan); the freshness lane's briefs R4, R5, R5B and R7 (read in part); the cx-tools lane's `BRIEF_CX-TOOLS.md` and the Annatar harvest's `w5w6/briefs/` other than the two common-rules files (keyword scan); the legolas folder's `sources/taur/LANDING_PACKET_TAUR.md` outside sections 3, 8 to 11, 12.6, 12.7, 12.10 and 13.6 to 13.11, and its `BEHAVIOUR_TAUR.md`, `DRYRUN_TAUR.txt` and `FIELDS_KIT5A.md`; the Annatar harvest's `w4-reference/` (the W4
+  lane, Batches 1656-1664, in no sweeper's table); the legolas folder's lothlorien and beleriand parts (other, unlanded lanes). Review pass 1's sweeper Standelf then read whole the freshness briefs P4 to P8, R5B, R6 and R8, `DESIGN_AELINUIAL.md`, and the Ascar folder's two briefs, four Edge briefs and three sheets, and filed one row from `EDGE_SHEET_CX-TOOLS.md` (`DX-KIT-CX-TOOLS-SHEET-DEVICELOST-NEVER-FALSE`, above). A second sitting then read whole the legolas folder's `sources/taur/LANDING_PACKET_TAUR.md`, `LEDGER_TAUR.md`, `BEHAVIOUR_TAUR.md`, `FIELDS_KIT5A.md` and `DRYRUN_TAUR.txt` and filed five rows (`NEW-PROBE-CAPTURE-SEAM-RULE-SEES-PROBE-TEXT-ONLY`, `NEW-C13-42A-2-LIST-OMITS-THE-HARVESTED-FAMILIES`, `NEW-EDGE-JOB-PLAN-FIRST-FULL-RUN-OWED`, `DX-DEBUGGING-GUIDE-METAR-ROW-STATE-AT-HEAD-STALE` and `NEW-VOXEL-PROBES-VERDICTS-IGNORE-DEVICE-ERRORS`, above). Briefs and Edge sheets are the seat's instructions and outside the set of S-1113-32 (seat ruling S-1113-35, `SEAT_RECORD_2026-11-13.md:273`: reviews, round files, hand-backs, packets and Edge receipts). No sweeper has read whole any other file listed here: the freshness briefs R4, R5 and R7, the cx-tools lane's `BRIEF_CX-TOOLS.md`, the Annatar harvest's other `w5w6/briefs/` and its `w4-reference/`, the freshness lane's reviewer sub-folders, the legolas folder's lothlorien and beleriand parts, and the patches, module diffs, logs, TAP output and banked images.

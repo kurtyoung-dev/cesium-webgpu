@@ -954,7 +954,7 @@ against TIP(11), and WebGL inside its same-build floor; its weather-map ON frame
 unchanged base moving 60,729 px against its own banked frame (more than the 32,318 px move), so no W4 batch is named (`NEW-CLOUD-W4-F3-WEATHER-MAP-ON-MULTISTATE`). Owed: the
 nine W4 runner homes, which the landing did not apply (`DX-LANDING-RUNNER-HOMES-NOT-APPLIED`, measured red at Batch 1664); the
 kit's experimental dial and the E-ON and dials-on E-T cells (probe-kit round 10, then the job's Phase 2); the bind-group key
-specs (`NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`); the PF debt (`NEW-CLOUD-W4-PF-DEBT`).
+specs (`NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED`, closed by Batch 1673, `dd1eb3d1e8`; rows batch 16b); the PF debt (`NEW-CLOUD-W4-PF-DEBT`).
 **Clone closeout and evidence curation (2026-11-01/02, records round 14):** 19 finished clones were harvested (lane-outs copied and
 md5-verified; four Astra clones' textual records banked as hold banks, 1,347.5 MB) and retired, two after nested junctions were
 unlinked by hand (`DX-RETIRE-TOOL-NESTED-JUNCTIONS`); the Gemini clones were not touched. The evidence curation of
@@ -979,7 +979,7 @@ moves (3481 weather content reuse, 3487 continuous synoptic structures, 3489 a p
 with its PF debt recorded (`NEW-CLOUD-W5W6-PF-DEBT`); its WebGL fallback is banked, so WebGL draws no regional or vertical weather
 (`NEW-CLOUD-W5W6-3490B-WEBGL-FALLBACK`). Batch 1670 (`49cd09660d`, 05:09 EST) is lane Faramir's spec-only karma batch: the shader
 source-id count guard pins all 45 ids again and the cloud main bind-group spec keys every resource but the weather-transition pair
-(`NEW-CLOUD-W4-SHADERSOURCEID-PIN` closed, `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED` narrowed). Rows: `DEFERRED_WORK.md` "2026-11-06 —
+(`NEW-CLOUD-W4-SHADERSOURCEID-PIN` closed, `NEW-CLOUD-W4-BINDGROUP-KEYS-UNGUARDED` narrowed; closed by Batch 1673). Rows: `DEFERRED_WORK.md` "2026-11-06 —
 records round 15".
 **Critical path:** the integration program of `R-2026-11-06-M1` (`DEFERRED_WORK.md` `NEW-INTEGRATION-PROGRAM-2026-11-06`).
 *[Updated 2026-11-06 by records round 15: the seat's plan replaces the sentence that queued the later W-waves W7a … W12 behind one
