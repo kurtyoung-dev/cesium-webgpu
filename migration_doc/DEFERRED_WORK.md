@@ -37112,7 +37112,7 @@ with an inertness mutant per probe or one over the shared claim, and the plan's 
   (`scripts/__tests__/specBundleFreshnessBuilds.spec.mjs:684-695`; what remains is `NEW-BUILDWATCH-IIFE-INJECT-DELETED`).
 - **Already on main, not filed again (by id):** Taur: `NEW-EDGE-JOB-EXIT0-NO-RECEIPT` (pass-2 R-3, rows 20 and 21),
   `DX-EDGE-JOB-CUSTOM-PLAN-ERROR-EXITS`, `NEW-EDGE-JOB-PRESERVE-SYMLINKS-MAIN`, `-FAMILY-REPEAT`, `-RECORD-NO-COMPLETION-MARK`,
-  `NEW-EDGE-JOB-MEASURED-HARNESS-HALF-UNSCOPED`, `DX-EDGE-JOB-PLAN-PORT-PINNED`, the Edge smoke's F1, F3, F4 and F5 rows (F2 was taken in round 5), `DX-KIT-ENTRY-GUARD-LINK-PATH`,
+  `NEW-EDGE-JOB-MEASURED-HARNESS-HALF-UNSCOPED`, `DX-EDGE-JOB-PLAN-PORT-PINNED`, the Edge smoke's F1, F3, F4 and F5 rows (F2's first half was taken in round 5; its second half is `DX-EDGE-JOB-INDEX-NO-FRAME-COUNT`, rows batch 16c), `DX-KIT-ENTRY-GUARD-LINK-PATH`,
   `DX-KIT-PARSE-TIME-REFUSAL-NO-FILE` (`:34988`), `NEW-NODE26-STRIP-TYPES-TRANSFORM`. Freshness: the eleven rows of rows batch 16a (`:36080-36204`) and its Notes.
   Codex cloud batch: `NEW-CLOUD-CX-PRIMARY-REUSE-NOT-EXERCISED`, `-SELECTED-EMISSION-DEFECT-UNREACHED`, `-TWO-VIEWS-NO-RIG`, the leg-2 rows of
   16a, `NEW-W3-QUARANTINE-PINS-STALE`. W5+W6: the wave's rows of records round 15 (`:35792-35897`). Node 26: `DX-HOMELESS-SPECS-RED-AT-HEAD`.
@@ -37123,3 +37123,70 @@ with an inertness mutant per probe or one over the shared claim, and the plan's 
   harvest; the freshness lane's briefs P4 to P8, R6 and R8 (keyword scan) and its reviewer sub-folders; `DESIGN_AELINUIAL.md` outside sections
   0, 4.1 and 13; the Codex cloud lane's briefs and `EDGE_SHEET_CX-TOOLS.md` (keyword scan); the freshness lane's briefs R4, R5, R5B and R7 (read in part); the cx-tools lane's `BRIEF_CX-TOOLS.md` and the Annatar harvest's `w5w6/briefs/` other than the two common-rules files (keyword scan); the legolas folder's `sources/taur/LANDING_PACKET_TAUR.md` outside sections 3, 8 to 11, 12.6, 12.7, 12.10 and 13.6 to 13.11, and its `BEHAVIOUR_TAUR.md`, `DRYRUN_TAUR.txt` and `FIELDS_KIT5A.md`; the Annatar harvest's `w4-reference/` (the W4
   lane, Batches 1656-1664, in no sweeper's table); the legolas folder's lothlorien and beleriand parts (other, unlanded lanes). Review pass 1's sweeper Standelf then read whole the freshness briefs P4 to P8, R5B, R6 and R8, `DESIGN_AELINUIAL.md`, and the Ascar folder's two briefs, four Edge briefs and three sheets, and filed one row from `EDGE_SHEET_CX-TOOLS.md` (`DX-KIT-CX-TOOLS-SHEET-DEVICELOST-NEVER-FALSE`, above). A second sitting then read whole the legolas folder's `sources/taur/LANDING_PACKET_TAUR.md`, `LEDGER_TAUR.md`, `BEHAVIOUR_TAUR.md`, `FIELDS_KIT5A.md` and `DRYRUN_TAUR.txt` and filed five rows (`NEW-PROBE-CAPTURE-SEAM-RULE-SEES-PROBE-TEXT-ONLY`, `NEW-C13-42A-2-LIST-OMITS-THE-HARVESTED-FAMILIES`, `NEW-EDGE-JOB-PLAN-FIRST-FULL-RUN-OWED`, `DX-DEBUGGING-GUIDE-METAR-ROW-STATE-AT-HEAD-STALE` and `NEW-VOXEL-PROBES-VERDICTS-IGNORE-DEVICE-ERRORS`, above). Briefs and Edge sheets are the seat's instructions and outside the set of S-1113-32 (seat ruling S-1113-35, `SEAT_RECORD_2026-11-13.md:273`: reviews, round files, hand-backs, packets and Edge receipts). No sweeper has read whole any other file listed here: the freshness briefs R4, R5 and R7, the cx-tools lane's `BRIEF_CX-TOOLS.md`, the Annatar harvest's other `w5w6/briefs/` and its `w4-reference/`, the freshness lane's reviewer sub-folders, the legolas folder's lothlorien and beleriand parts, and the patches, module diffs, logs, TAP output and banked images.
+
+## 2026-11-14 — rows batch 16c: four follow-up rows a third recheck of three lane clones found on main in no form (the Edge job runner lane: three; the bind-group key guards: one)
+
+Rows batch 16c (the seat Gandalf; from the third recheck of the clones of the lanes below: refuters Deeping, Meduseld and Combe, ruler Lastbridge), written and checked at
+main's tip `f5858ec618` (Batch 1684). Seat ruling S-1113-39 (`lanes-2026-11-13/SEAT_RECORD_2026-11-13.md:303`) lets a lane's clone be retired only when its code is on main and
+every follow-up of every round of its lane is on main, closed since, or named in a Notes block with its reason. After rows batch 16b the recheck hunted through the lanes'
+files once more and ruled on eighteen candidates: ten are covered on main, three are reviewer notes that went to the seat record's list for records round 16, one belongs to
+a lane whose clone is long retired (the Notes), and four are on main in no form. The ruler wrote each of those four rows (`lanes-2026-11-14/clone-retirement/RECHECK3_NOTES.md`)
+and the seat opened every statement of each at its source and at the tip before filing it; where the seat changed a sentence, the Notes say so. No build, browser, server or
+test run was made for this batch. The source folders are those of rows batch 16b's first paragraph (`:36400-36414`); the key guards' first review is under
+`lanes-2026-11-06/two-guards-aragorn/`.
+
+### DX-KIT-OUTPUT-ROOT-DOTDOT-NAME-REFUSED — a directory directly under the checkout whose name begins with `..` is refused as "outside the repository root" by the edge-job runner and by the runtime's `--output` check — **OPEN** (probe-kit tooling, small; Taur round 3, worker Hendor, "unchanged, not in scope")
+
+Both checks take `path.relative(root, candidate)` and refuse when it starts with `..` (`Tools/visual-regression/edge-job-runner.mjs:311-312`;
+`Tools/visual-regression/lib/probe-output-location.mjs:25-28`). For `<checkout>/..foo` the relative path is `..foo`, so `--job-dir <checkout>/..foo`
+is refused "outside the repository root" and a probe's `--output <checkout>/..foo` is refused the same way, though both lie inside the checkout. A
+deeper directory such as `Tools/..x` is accepted (its relative path starts with `Tools`). The runner spec's sibling group (`edge-job-runner.spec.mjs:1533`)
+pins the outside half only. **Read at the tip; no run was made.** **Closes when:** both checks refuse only `..` itself or a first segment equal to `..`
+(`relative === ".." || relative.startsWith(".." + path.sep)`), each with a case for `<root>/..foo` accepted and an inertness mutant. **Source:** legolas folder
+`round3/galadhon/HENDOR.md:71` (item 4).
+
+### DX-EDGE-JOB-INDEX-NO-FRAME-COUNT — the edge-job index and `elapsed.json` do not say how many frames an entry banked — **OPEN** (probe-kit tooling, small; the round-4 Edge smoke's F2, second half)
+
+Round 5 answered the first half of the smoke's F2 (how many entries measured: `summarizeMeasured` and `measuredLine`, `Tools/visual-regression/edge-job-runner.mjs:736`,
+`:755`, `elapsed.measured` `:812`). The second half stands: the family index has no frame column (`:622`, the header row) and `elapsed.json` carries none, so an
+executor reads an entry's frames only by listing its directory (the smoke's entries banked 9 and 13). The 16b Notes' "F2 was taken in round 5" covers the first
+half only. **Read at the tip; no run was made.** **Closes when:** each index row (or `elapsed.json` entry) carries the count of PNG frames under the entry's
+directory, with a runner-spec case and an inertness mutant. **Source:** legolas folder `edge/taur-r4-smoke/_lane-out/EDGE_RECEIPT_EOWYN_TAUR4.md:68-69` (F2);
+`edge/taur-r4-smoke/SUMMARY_EOWYN_TAUR4.txt:107` (cell 7).
+
+### DX-EDGE-JOB-ION-TOKEN-401-REDS — on a tree without a valid ion token the viewer's 401s are console errors, and the voxel probes' "no console errors" clause counts them, so the edge job's voxel entries read red for a network reason — **OPEN** (probe-kit, Edge environment; the first-contact Edge leg's F5)
+
+The first-contact executor saw CesiumViewer's default token draw 401 and `RequestErrorEvent` console errors (5 to 14 per run) in BEFORE and KIT alike; they turned
+`voxel-pick` (errors, run 0), camera-parity (off byte-identity) and appearance-demo (error-free) red. At the tip the voxel page helper keeps every `error`-type console
+message on purpose (`Tools/visual-regression/lib/voxel-probe-page.mjs:24-28`, `isVoxelErrorRecord` `:105-107`) and `probe-voxel-pick.mjs:410-416` scores them, so the
+first full job (`NEW-EDGE-JOB-PLAN-FIRST-FULL-RUN-OWED`) can read voxel entries red on such a tree whatever the renderer does: `voxel-pick` is the plan's `voxel` entry `pick`, the
+plan's ten other voxel entries collect console errors through the same helper, and camera-parity and appearance-demo are model probes, a family the plan does not hold yet
+(`Tools/visual-regression/edge-job-plan.json:3`). **Read at the tip and from the receipt;
+nothing was run.** **Closes when:** the Edge job's prerequisites name a valid ion token (or a served, token-free page), or the voxel clauses count network-request
+errors apart from page errors, with a case that a 401 console line alone does not fail the clause. **Source:** legolas folder
+`edge/first-contact/bank/SUMMARY_EOWYN_STRAYS.txt:36` (F5); `edge/first-contact/_lane-out/EDGE_RECEIPT_EOWYN_STRAYS.md:40`.
+
+### NEW-CLOUD-SHADOW-BINDGROUP-COMPLETENESS-FULL-INPUTS-ONLY — the shadow bind-group cache's completeness test runs only with every optional family present, so a binding emitted only when a family is absent is seen by no test — **OPEN** (spec gap; the key guards' review R-3 (b), landed in Batch 1673)
+
+`Tools/visual-regression/webgpu-cloud-shadow-bind-group-cache.spec.mjs:364-406` lists the stored fields and the emitted bindings from one context, `resolveFull(harness, createFullInputs())`
+(`:366`), and requires a guarding case for each. `WebGPUCloudShadowBindGroupCache.ts` emits bindings 15, 29 and 30, 17 and 18, 20 and 21, 22 and 23 only when the material-flow, occupancy,
+density-cache and deep-shadow families are present; the cases that build a group with a family absent (the five at `:72-177`: no occupancy, density-cache or deep-shadow input in any, no material flow in the first three; and the `weatherTransition` fallback, `:355-362`) read named bindings only and never list the descriptor's entries, so a binding that only an absent
+family adds, or a presence condition widened to emit a binding while its family is absent, turns no test red. Nothing is missed today (the review: "absent-family paths emit no extra binding"). The row
+`NEW-CLOUD-BINDGROUP-COMPLETENESS-GUARD-BLIND-SPOTS` carries the review's half (a) only. **Read at the tip; no mutant was run.** **Closes when:** the completeness test also runs
+under the minimal input set (every optional family absent), with a mutant that adds a binding on an absent-family path turning it red. **Source:**
+`lanes-2026-11-06/two-guards-aragorn/review-p1/REVIEW_HAMA_KEYS_P1.md:24` (R-3); linwe harvest `LANDING_PACKET_ARAGORN.md:242`.
+
+### Notes (rows batch 16c; no new ids beyond the headings above)
+
+- **Corrected where it stands:** the Notes of rows batch 16b said of the Edge smoke's findings "(F2 was taken in round 5)" (`:37115`). Round 5 took F2's first half, how many
+  entries measured; its second half is `DX-EDGE-JOB-INDEX-NO-FRAME-COUNT` above, and the sentence now says so. No line is added or removed above this section.
+- **Two sentences are the seat's, not the ruler's:** in `DX-EDGE-JOB-ION-TOKEN-401-REDS`, the sentence on the first full job (the ruler wrote that it "will read these entries red";
+  of the three probes the source names only `voxel-pick` is a plan entry); in `NEW-CLOUD-SHADOW-BINDGROUP-COMPLETENESS-FULL-INPUTS-ONLY`, the remedy is the review's own (the minimal
+  input set), without the ruler's added "and under each family alone".
+- **Ruled covered by the recheck and not filed** (the ruler's readings, `RECHECK3_NOTES.md` sections 1 and 2; the seat did not re-open these six): the first Taur review's note that a
+  refused default run can leave frames it wrote under new names; the Taur ledger's candidate piece `NEW-KIT-SPAWN-ENTRY-HERMETIC`; a c11 spec's need of a repository-root working
+  directory; the freshness packet's sentence that a line-ending flip counts as source drift; a root-cause analysis the fifth freshness pass's verifier did not run; the key guards'
+  review note R-4 on a lane scratch script.
+- **Owed, and not this batch's:** the weather harvest's F1, F2 and F5 (`lanes-2026-09-26/harvest-weather/LANDING_PACKET_MORIA.md:155`, `:157`, `:163`) are on main in no form; that
+  lane's clone is long retired, and they go to the next rows batch. Three notes of pass 1 of rows batch 16b that were addressed to the seat are item 9 of the seat record's list
+  "Owed to records round 16" (`lanes-2026-11-13/SEAT_RECORD_2026-11-13.md:304`).
