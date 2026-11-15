@@ -1,4 +1,4 @@
-// @purpose Behaviour coverage for Tools/temp-hygiene.mjs — classification age gates, the plan-only default, the execute-time protect/horizon/evidence refusals, and the guarantee that a junction inside a delete target is never followed.
+// @purpose Behaviour coverage for Tools/temp-hygiene.mjs — classification age gates, the plan-only default, the execute-time protect/horizon/evidence refusals, the guarantee that a junction inside a delete target is never followed, no guessed running session, tracked-image copies not counted as evidence, and finished lanes named for the sweep.
 // @status ACTIVE
 //
 // DESTRUCTIVE TESTS LIVE UNDER os.tmpdir() AND NOWHERE ELSE (maintainer,
@@ -24,14 +24,18 @@ import { mkLaneTmp, removeLaneTmp, sweepLaneTmp } from "./lib/lane-tmp.mjs";
 import {
   executePlan,
   findEvidenceDirs,
+  gitBlobId,
   hasLiveLock,
   isProtected,
+  NEVER_FINISHED_LANES,
   planTempRoot,
   protectPaths,
+  trackedImageBlobIds,
 } from "./temp-hygiene.mjs";
 
 const LANE = "temp-hygiene-spec";
 const MODULE_PATH = path.join(import.meta.dirname, "temp-hygiene.mjs");
+const REPO_ROOT = path.resolve(import.meta.dirname, "..");
 const SCRIPT = MODULE_PATH;
 const DAY_MS = 86_400_000;
 const NOW = Date.parse("2026-09-11T18:00:00.000Z");
@@ -820,4 +824,691 @@ test("G2: INERTNESS MUTANT — with the cwd default restored, G1 goes red", () =
   } finally {
     removeLaneTmp(host);
   }
+});
+
+// ---------------------------------------------------------------------------
+// H. The running session is never guessed (T1), copies of tracked images are
+// not evidence (T3), and a finished lane can be named (T2). Each behaviour is
+// one assertion function, run on the real module and on a mutant of it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Import a copy of the tool with each `[anchor, replacement]` applied exactly
+ * once; the copy is written under the lane temp root and removed once loaded.
+ */
+async function importToolMutant(name, pairs) {
+  const host = mkLaneTmp("mutant-host-", { laneName: LANE });
+  try {
+    let source = fs.readFileSync(MODULE_PATH, "utf8").split("\r\n").join("\n");
+    for (const [anchor, replacement] of pairs) {
+      assert.equal(
+        source.split(anchor).length - 1,
+        1,
+        `a mutant anchor must occur exactly once: ${anchor}`,
+      );
+      source = source.replace(anchor, () => replacement);
+    }
+    source = source.replace(
+      'from "./lib/lane-tmp.mjs"',
+      () =>
+        `from ${JSON.stringify(pathToFileURL(path.join(import.meta.dirname, "lib", "lane-tmp.mjs")).href)}`,
+    );
+    const file = path.join(host, `temp-hygiene-${name}-mutant.mjs`);
+    fs.writeFileSync(file, source);
+    return await import(pathToFileURL(file).href);
+  } finally {
+    removeLaneTmp(host);
+  }
+}
+
+function withSessionId(value, body) {
+  const previous = process.env.CLAUDE_SESSION_ID;
+  if (value === undefined) delete process.env.CLAUDE_SESSION_ID;
+  else process.env.CLAUDE_SESSION_ID = value;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env.CLAUDE_SESSION_ID;
+    else process.env.CLAUDE_SESSION_ID = previous;
+  }
+}
+
+/**
+ * Four session folders: the live one, an hour old and still holding only
+ * empty folders; a stale one whose own folder was touched last (the newest
+ * folder time, which is what a guess would pick); a young one with a file;
+ * and an old empty one, which is still swept.
+ */
+function sessionFixture(root) {
+  const project = path.join(root, "claude", "some-project");
+  fs.mkdirSync(project, { recursive: true });
+  const live = path.join(project, "session-live");
+  fs.mkdirSync(path.join(live, "scratchpad"), { recursive: true });
+  fs.mkdirSync(path.join(live, "tasks"));
+  ageTree(live, 1 / 24);
+  const stale = makeDir(project, "session-stale", 6, { file: "transcript" });
+  age(stale, 0);
+  const youngWithFile = makeDir(project, "session-young", 2 / 24, {
+    file: "transcript",
+  });
+  const oldEmpty = makeDir(project, "session-old-empty", 9);
+  return { live, stale, youngWithFile, oldEmpty };
+}
+
+/** T1, as one check: no guess, and nothing young in a session ever deleted. */
+function assertNoSessionGuess(module) {
+  const root = fakeTemp();
+  try {
+    const fixture = sessionFixture(root);
+    const plan = withSessionId(undefined, () =>
+      module.planTempRoot({ temp: root, now: NOW }),
+    );
+    assert.equal(
+      plan.runningSession,
+      null,
+      "with CLAUDE_SESSION_ID unset the plan named a running session by guess",
+    );
+    assert.equal(
+      rowFor(plan, fixture.live).list,
+      "keep",
+      "the live session (an hour old, no files yet) is on the delete list",
+    );
+    assert.equal(rowFor(plan, fixture.youngWithFile).list, "keep");
+    assert.equal(rowFor(plan, fixture.stale).list, "keep");
+    assert.equal(
+      rowFor(plan, fixture.oldEmpty).list,
+      "delete",
+      "control: an old empty session folder is still swept",
+    );
+    const claudeRoot = path.join(root, "claude") + path.sep;
+    assert.deepEqual(
+      plan.delete
+        .filter((row) => row.path.startsWith(claudeRoot) && row.ageDays < 1)
+        .map((row) => row.path),
+      [],
+      "a session folder younger than a day is on the delete list",
+    );
+  } finally {
+    removeLaneTmp(root);
+  }
+}
+
+test("H1 (T1): with CLAUDE_SESSION_ID unset no session is named running, and no session folder younger than a day is deleted, empty or not", () => {
+  assertNoSessionGuess({ planTempRoot });
+});
+
+test("H1b (T1): with CLAUDE_SESSION_ID set, the named folder is the running session and the others are classified as before", () => {
+  const root = fakeTemp();
+  try {
+    const fixture = sessionFixture(root);
+    const plan = withSessionId("session-live", () =>
+      planTempRoot({ temp: root, now: NOW }),
+    );
+    assert.equal(plan.runningSession, fixture.live);
+    assert.equal(rowFor(plan, fixture.live).category, "running-session");
+    assert.equal(rowFor(plan, fixture.oldEmpty).category, "empty-session");
+    assert.equal(rowFor(plan, fixture.youngWithFile).list, "keep");
+  } finally {
+    removeLaneTmp(root);
+  }
+});
+
+test("H1m (T1): MUTANT — with the newest-folder guess restored, H1 goes red", async () => {
+  const mutant = await importToolMutant("session-guess", [
+    [
+      "  if (declared === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(declared))\n    return null;",
+      [
+        "  if (declared === undefined) {",
+        "    let newest = null;",
+        "    let newestTime = -1;",
+        "    for (const project of fs.readdirSync(claudeRoot)) {",
+        "      for (const session of fs.readdirSync(path.join(claudeRoot, project))) {",
+        "        const sessionPath = path.join(claudeRoot, project, session);",
+        "        const stats = fs.lstatSync(sessionPath);",
+        "        if (stats.mtimeMs > newestTime) {",
+        "          newestTime = stats.mtimeMs;",
+        "          newest = sessionPath;",
+        "        }",
+        "      }",
+        "    }",
+        "    return newest;",
+        "  }",
+      ].join("\n"),
+    ],
+  ]);
+  assert.throws(
+    () => assertNoSessionGuess(mutant),
+    /named a running session by guess/,
+  );
+});
+
+test("H1n (T1): MUTANT — with the session age floor unreachable, H1 goes red", async () => {
+  const mutant = await importToolMutant("session-floor", [
+    [
+      "      if (age < PATTERN_AGE_DAYS) {\n        // A session in use",
+      "      if (false && age < PATTERN_AGE_DAYS) {\n        // A session in use",
+    ],
+  ]);
+  assert.throws(
+    () => assertNoSessionGuess(mutant),
+    /the live session \(an hour old, no files yet\) is on the delete list/,
+  );
+});
+
+/** A tracked PNG whose working-tree bytes are the bytes the index holds. */
+function trackedImageBytes() {
+  const listed = spawnSync("git", ["ls-files", "-s", "-z", "--", "*.png"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  for (const record of listed.stdout.split("\0")) {
+    const match = /^\d{6} ([0-9a-f]{40,64}) \d\t(.+)$/.exec(record);
+    if (match === null) continue;
+    const file = path.join(REPO_ROOT, match[2]);
+    let bytes;
+    try {
+      bytes = fs.readFileSync(file);
+    } catch {
+      continue;
+    }
+    const algorithm = match[1].length === 64 ? "sha256" : "sha1";
+    if (bytes.length > 0 && gitBlobId(bytes, algorithm) === match[1]) {
+      return bytes;
+    }
+  }
+  assert.fail("no tracked PNG whose working-tree bytes match the index");
+}
+
+/** T3, as one check: copies of tracked images are not evidence; one changed image is. */
+function assertTrackedCopiesAreNotEvidence(module) {
+  const root = fakeTemp();
+  try {
+    const bytes = trackedImageBytes();
+    const builtTarget = path.join(root, "build-copy-Ab3xYz");
+    const built = path.join(builtTarget, "Build", "Assets", "Images");
+    fs.mkdirSync(built, { recursive: true });
+    fs.writeFileSync(path.join(built, "first.png"), bytes);
+    fs.writeFileSync(path.join(built, "second.png"), bytes);
+    const mixedTarget = path.join(root, "diff-run-Cd4eFg");
+    const mixed = path.join(mixedTarget, "out");
+    fs.mkdirSync(mixed, { recursive: true });
+    fs.writeFileSync(path.join(mixed, "copy.png"), bytes);
+    fs.writeFileSync(
+      path.join(mixed, "changed.png"),
+      Buffer.concat([bytes, Buffer.from([0])]),
+    );
+    ageTree(builtTarget, 5);
+    ageTree(mixedTarget, 5);
+
+    const plan = module.planTempRoot({
+      temp: root,
+      now: NOW,
+      repoRoot: REPO_ROOT,
+    });
+    assert.equal(rowFor(plan, builtTarget).list, "delete");
+    assert.equal(rowFor(plan, mixedTarget).list, "delete");
+    assert.deepEqual(
+      plan.evidence.dirs,
+      [mixed],
+      "a folder of tracked-image copies counted as evidence, or one changed image did not",
+    );
+    assert.equal(plan.evidence.trackedCopyDirs, 1);
+  } finally {
+    removeLaneTmp(root);
+  }
+}
+
+test("H3 (T3): a folder whose images are all copies of tracked images is not evidence; one image that differs makes it evidence", () => {
+  assertTrackedCopiesAreNotEvidence({ planTempRoot });
+});
+
+test("H3m (T3): MUTANT — with the tracked-copy test unreachable, H3 goes red", async () => {
+  const mutant = await importToolMutant("tracked-copies", [
+    [
+      "if (!found.has(directory) && !isTrackedCopy(child)) {",
+      "if (!found.has(directory) && !(false && isTrackedCopy(child))) {",
+    ],
+  ]);
+  assert.throws(
+    () => assertTrackedCopiesAreNotEvidence(mutant),
+    /a folder of tracked-image copies counted as evidence/,
+  );
+});
+
+/**
+ * T3, where git cannot answer: no image counts as a copy of a tracked one, so a
+ * folder of images in a delete target is evidence and `executePlan` refuses it
+ * until it is banked. The images are byte copies of a tracked image, so only a
+ * tool that treats "no answer" as "everything is tracked" drops them.
+ */
+function assertNoGitMeansEvidence(module) {
+  const root = fakeTemp();
+  const notRepo = mkLaneTmp("not-a-repo-", { laneName: LANE });
+  try {
+    const bytes = trackedImageBytes();
+    const target = path.join(root, "shots-run-Ef5gHi");
+    const shots = path.join(target, "out");
+    fs.mkdirSync(shots, { recursive: true });
+    fs.writeFileSync(path.join(shots, "copy.png"), bytes);
+    ageTree(target, 5);
+
+    for (const [label, repoRoot] of [
+      ["repoRoot: null", null],
+      ["a repoRoot that is no repository", notRepo],
+    ]) {
+      const plan = module.planTempRoot({ temp: root, now: NOW, repoRoot });
+      assert.equal(rowFor(plan, target).list, "delete", label);
+      assert.deepEqual(
+        plan.evidence.dirs,
+        [shots],
+        `${label}: with git unable to answer, an image folder was not evidence`,
+      );
+      assert.equal(plan.evidence.trackedCopyDirs, 0, label);
+      const refused = module.executePlan(plan);
+      assert.match(
+        refused.refused ?? "",
+        /not banked/,
+        `${label}: the unbanked image folder was not refused`,
+      );
+      assert.equal(fs.existsSync(target), true, `${label}: nothing deleted`);
+    }
+  } finally {
+    removeLaneTmp(notRepo);
+    removeLaneTmp(root);
+  }
+}
+
+test("H3n (T3): where git cannot answer, an image folder in a delete target is evidence and execute refuses it unbanked", () => {
+  assertNoGitMeansEvidence({ planTempRoot, executePlan });
+});
+
+test("H3o (T3): MUTANT — with 'git cannot answer' read as 'every image is tracked', H3n goes red", async () => {
+  const mutant = await importToolMutant("no-git", [
+    [
+      "    if (tracked === null) return false;",
+      "    if (tracked === null) return true;",
+    ],
+  ]);
+  assert.throws(
+    () => assertNoGitMeansEvidence(mutant),
+    /with git unable to answer, an image folder was not evidence/,
+  );
+});
+
+/**
+ * T3, with a repository variable of git set in the caller's environment (as a
+ * git hook sets them): what the tool learns from git about a folder is about
+ * that folder. The two variables that change git's answer are tested one at a
+ * time: `GIT_INDEX_FILE` naming a missing index and `GIT_DIR` naming another
+ * repository (an empty one made by hand) must not change the answer for the
+ * repository itself, and `GIT_DIR` naming a real repository must not make a
+ * `repoRoot` that is no repository answer for it. `GIT_WORK_TREE` alone changes
+ * nothing git says here, so it is not stripped. The environment is restored
+ * whatever happens.
+ */
+function assertGitVariablesAreNotTaken(module) {
+  const gitDir = spawnSync("git", ["rev-parse", "--absolute-git-dir"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+  assert.equal(gitDir.status, 0, gitDir.stderr);
+  const names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+  const saved = Object.fromEntries(
+    names.map((name) => [name, process.env[name]]),
+  );
+  const setOnly = (name, value) => {
+    for (const other of names) delete process.env[other];
+    if (name !== null) process.env[name] = value;
+  };
+  const answer = (repoRoot) => {
+    const found = module.trackedImageBlobIds(repoRoot);
+    return found === null
+      ? null
+      : { algorithm: found.algorithm, ids: [...found.ids].sort() };
+  };
+  const root = fakeTemp();
+  const notRepo = mkLaneTmp("not-a-repo-env-", { laneName: LANE });
+  const hostile = mkLaneTmp("hostile-git-env-", { laneName: LANE });
+  try {
+    // An empty repository, made by hand: HEAD, objects and refs.
+    const other = path.join(hostile, "other.git");
+    fs.mkdirSync(path.join(other, "objects", "info"), { recursive: true });
+    fs.mkdirSync(path.join(other, "objects", "pack"), { recursive: true });
+    fs.mkdirSync(path.join(other, "refs", "heads"), { recursive: true });
+    fs.writeFileSync(path.join(other, "HEAD"), "ref: refs/heads/main\n");
+
+    setOnly(null);
+    const bytes = trackedImageBytes();
+    const baseline = answer(REPO_ROOT);
+    assert.ok(
+      baseline !== null && baseline.ids.length > 0,
+      "the repository itself lists tracked images",
+    );
+    for (const [name, value, what] of [
+      [
+        "GIT_INDEX_FILE",
+        path.join(hostile, "missing-index"),
+        "a missing index",
+      ],
+      ["GIT_DIR", other, "another repository"],
+    ]) {
+      setOnly(name, value);
+      assert.deepEqual(
+        answer(REPO_ROOT),
+        baseline,
+        `with ${name} naming ${what}, the answer for the repository itself changed`,
+      );
+    }
+
+    const target = path.join(root, "shots-run-Gh6iJk");
+    const shots = path.join(target, "out");
+    fs.mkdirSync(shots, { recursive: true });
+    fs.writeFileSync(path.join(shots, "copy.png"), bytes);
+    ageTree(target, 5);
+    setOnly("GIT_DIR", gitDir.stdout.trim());
+    const plan = module.planTempRoot({
+      temp: root,
+      now: NOW,
+      repoRoot: notRepo,
+    });
+    assert.deepEqual(
+      plan.evidence.dirs,
+      [shots],
+      "with GIT_DIR naming a repository, a repoRoot that is no repository answered for that repository",
+    );
+    assert.equal(module.trackedImageBlobIds(notRepo), null);
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    removeLaneTmp(hostile);
+    removeLaneTmp(notRepo);
+    removeLaneTmp(root);
+  }
+}
+
+test("H3p (T3): GIT_DIR and GIT_INDEX_FILE in the caller's environment, each alone, do not change what git says about the folder asked", () => {
+  const names = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"];
+  const before = names.map((name) => process.env[name]);
+  assertGitVariablesAreNotTaken({ planTempRoot, trackedImageBlobIds });
+  assert.deepEqual(
+    names.map((name) => process.env[name]),
+    before,
+    "the case leaks nothing into the environment",
+  );
+});
+
+test("H3q (T3): MUTANT — with the caller's git variables handed through, H3p goes red", async () => {
+  const mutant = await importToolMutant("git-variables", [
+    [
+      "    if (GIT_REPOSITORY_VARIABLES.includes(name.toUpperCase())) continue;",
+      "    if (false && GIT_REPOSITORY_VARIABLES.includes(name.toUpperCase())) continue;",
+    ],
+  ]);
+  assert.throws(
+    () => assertGitVariablesAreNotTaken(mutant),
+    /the answer for the repository itself changed/,
+  );
+});
+
+test("H3r (T3): MUTANT — with GIT_INDEX_FILE handed through, H3p goes red on that variable", async () => {
+  const mutant = await importToolMutant("git-index-file", [
+    [
+      'const GIT_REPOSITORY_VARIABLES = ["GIT_DIR", "GIT_INDEX_FILE"];',
+      'const GIT_REPOSITORY_VARIABLES = ["GIT_DIR"];',
+    ],
+  ]);
+  assert.throws(
+    () => assertGitVariablesAreNotTaken(mutant),
+    /with GIT_INDEX_FILE naming a missing index, the answer for the repository itself changed/,
+  );
+});
+
+/** Lane roots: two young lanes, the slot's state folder, and an old lane. */
+function laneFixture(root) {
+  const lanes = path.join(root, "cesium-lane");
+  fs.mkdirSync(lanes);
+  const finished = makeDir(lanes, "gimli", 0, { file: "scratch" });
+  const running = makeDir(lanes, "legolas", 0, { file: "scratch" });
+  const slot = makeDir(lanes, "_seat", 0, { file: "BUILD_SLOT.lock" });
+  const old = makeDir(lanes, "boromir", 5, { file: "scratch" });
+  age(lanes, 0);
+  return { lanes, finished, running, slot, old };
+}
+
+/** T2, as one check on the plan. */
+function assertFinishedLanes(module) {
+  const root = fakeTemp();
+  try {
+    const fixture = laneFixture(root);
+    const plan = module.planTempRoot({
+      temp: root,
+      now: NOW,
+      finishedLanes: "gimli, ghost",
+    });
+    assert.equal(
+      rowFor(plan, fixture.finished).list,
+      "delete",
+      "a lane named finished was kept because it is young",
+    );
+    assert.equal(rowFor(plan, fixture.finished).category, "finished-lane");
+    assert.equal(rowFor(plan, fixture.running).list, "keep");
+    assert.equal(rowFor(plan, fixture.slot).list, "keep");
+    assert.equal(rowFor(plan, fixture.old).list, "delete");
+    assert.deepEqual(plan.finishedLanes, {
+      named: ["gimli"],
+      missing: ["ghost"],
+    });
+    for (const named of ["_seat", "_SEAT", "gimli,_Seat"]) {
+      assert.throws(
+        () =>
+          module.planTempRoot({ temp: root, now: NOW, finishedLanes: named }),
+        /may never name _seat: it is the slot's state folder/,
+        `--finished-lanes ${named} was not refused`,
+      );
+    }
+    assert.throws(
+      () =>
+        module.planTempRoot({ temp: root, now: NOW, finishedLanes: "../up" }),
+      /invalid lane name/,
+    );
+  } finally {
+    removeLaneTmp(root);
+  }
+}
+
+test("H2 (T2): finished lanes go on the delete list whatever their age; _seat can never be named; a name with no root is reported", () => {
+  assertFinishedLanes({ planTempRoot });
+});
+
+test("H2b (T2): a finished lane's root still passes the evidence gate and the lock probe at execute time", () => {
+  const root = fakeTemp();
+  try {
+    const fixture = laneFixture(root);
+    const shots = path.join(fixture.finished, "shots");
+    fs.mkdirSync(shots);
+    fs.writeFileSync(path.join(shots, "frame.png"), "not a tracked image");
+    fs.writeFileSync(path.join(fixture.finished, "LOCK"), "");
+    ageTree(fixture.finished, 0);
+    const plan = planTempRoot({ temp: root, now: NOW, finishedLanes: "gimli" });
+    assert.deepEqual(plan.evidence.dirs, [shots]);
+
+    const unbanked = executePlan(plan);
+    assert.match(unbanked.refused ?? "", /not banked/);
+    assert.equal(fs.existsSync(fixture.finished), true);
+
+    plan.evidence.receipt = { verified: true, pngInZip: 1, pngOnDisk: 1 };
+    const busy = () => {
+      const error = new Error("held");
+      error.code = "EBUSY";
+      throw error;
+    };
+    const locked = executePlan(plan, { open: busy });
+    assert.ok(
+      locked.skipped.some(
+        (line) => line === `LOCKED ${path.resolve(fixture.finished)}`,
+      ),
+      locked.skipped.join("\n"),
+    );
+    assert.equal(fs.existsSync(fixture.finished), true);
+
+    const swept = executePlan(plan);
+    assert.equal(swept.refused, null);
+    assert.equal(fs.existsSync(fixture.finished), false);
+    assert.equal(fs.existsSync(fixture.running), true);
+    assert.equal(fs.existsSync(fixture.slot), true);
+  } finally {
+    removeLaneTmp(root);
+  }
+});
+
+test("H2c (T2): the CLI prints the finished lanes and the names with no root, and refuses _seat", () => {
+  const root = fakeTemp();
+  const out = path.join(root, "..", `plan-h2c-${process.pid}.json`);
+  try {
+    laneFixture(root);
+    const listed = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "--plan",
+        "--temp",
+        root,
+        "--out",
+        out,
+        "--finished-lanes",
+        "gimli,ghost",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.match(
+      listed.stdout,
+      /^FINISHED LANES on the delete list: gimli; NO ROOT: ghost$/m,
+    );
+    const refused = spawnSync(
+      process.execPath,
+      [
+        SCRIPT,
+        "--plan",
+        "--temp",
+        root,
+        "--out",
+        out,
+        "--finished-lanes",
+        "_seat",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /REFUSED: .*slot's state folder/);
+    const empty = spawnSync(
+      process.execPath,
+      [SCRIPT, "--plan", "--temp", root, "--out", out, "--finished-lanes"],
+      { encoding: "utf8" },
+    );
+    assert.equal(empty.status, 1);
+    assert.match(empty.stderr, /needs <lane>/);
+  } finally {
+    fs.rmSync(out, { force: true });
+    removeLaneTmp(root);
+  }
+});
+
+test("H2m (T2): MUTANT — with the finished-lane branch unreachable, H2 goes red", async () => {
+  const mutant = await importToolMutant("finished-branch", [
+    [
+      "    if (finished.has(fold(lane)) && stats.isDirectory()) {",
+      "    if (false && finished.has(fold(lane)) && stats.isDirectory()) {",
+    ],
+  ]);
+  assert.throws(
+    () => assertFinishedLanes(mutant),
+    /a lane named finished was kept because it is young/,
+  );
+});
+
+test("H2n (T2): MUTANT — with the shared-lane refusal unreachable, H2 goes red", async () => {
+  const mutant = await importToolMutant("seat-refusal", [
+    [
+      "    if (shared !== undefined) {",
+      "    if (false && shared !== undefined) {",
+    ],
+  ]);
+  assert.throws(
+    () => assertFinishedLanes(mutant),
+    /--finished-lanes _seat was not refused|may never name _seat/,
+  );
+});
+
+// The lane folders that are shared roots, written out here and not read from
+// the tool: the slot's state, the root of every process run without a lane
+// name, and the landing tools' scratch.
+const SHARED_LANES = ["_seat", "seat", "landing"];
+
+/** T2 (shared roots), as one check: none of them can be named a finished lane. */
+function assertSharedLanesNeverFinished(module) {
+  const root = fakeTemp();
+  try {
+    const lanes = path.join(root, "cesium-lane");
+    fs.mkdirSync(lanes);
+    const shared = SHARED_LANES.map((name) =>
+      makeDir(lanes, name, 0, { file: "scratch" }),
+    );
+    makeDir(lanes, "gimli", 0, { file: "scratch" });
+    age(lanes, 0);
+    for (const base of SHARED_LANES) {
+      for (const named of [
+        base,
+        base.toUpperCase(),
+        `gimli,${base}`,
+        `${base} gimli`,
+      ]) {
+        assert.throws(
+          () =>
+            module.planTempRoot({ temp: root, now: NOW, finishedLanes: named }),
+          new RegExp(`may never name ${base}: it is `),
+          `--finished-lanes ${named} was not refused`,
+        );
+      }
+    }
+    const plan = module.planTempRoot({
+      temp: root,
+      now: NOW,
+      finishedLanes: "gimli",
+    });
+    for (const folder of shared) {
+      assert.equal(rowFor(plan, folder).list, "keep", folder);
+    }
+    assert.deepEqual(
+      [...module.NEVER_FINISHED_LANES.keys()].sort(),
+      [...SHARED_LANES].sort(),
+      "the one constant names exactly the shared lanes",
+    );
+  } finally {
+    removeLaneTmp(root);
+  }
+}
+
+test("H2d (T2): seat and landing, like _seat, can never be named a finished lane, in any case or list position", () => {
+  assertSharedLanesNeverFinished({
+    planTempRoot,
+    NEVER_FINISHED_LANES,
+  });
+});
+
+test("H2o (T2): MUTANT — with seat and landing left out of the refusal, H2d goes red", async () => {
+  const mutant = await importToolMutant("shared-lanes", [
+    [
+      "    const shared = NEVER_FINISHED_LANES.get(name.toLowerCase());",
+      "    const shared =\n      name.toLowerCase() === SLOT_STATE_LANE\n        ? NEVER_FINISHED_LANES.get(SLOT_STATE_LANE)\n        : undefined;",
+    ],
+  ]);
+  assert.throws(
+    () => assertSharedLanesNeverFinished(mutant),
+    /--finished-lanes seat was not refused/,
+  );
 });

@@ -25,7 +25,7 @@
  * directory that was never in the plan.
  *
  * Usage:
- *   node Tools/temp-hygiene.mjs --plan [--out plan.json] [--temp <dir>]
+ *   node Tools/temp-hygiene.mjs --plan [--out plan.json] [--temp <dir>] [--finished-lanes <a,b>]
  *   node Tools/temp-hygiene.mjs --bank-evidence <archiveDir> --plan plan.json
  *   node Tools/temp-hygiene.mjs --execute --plan plan.json
  *
@@ -33,18 +33,39 @@
  * `--execute` is passed AND a plan file is named. Without `--out` the plan is
  * written to the lane temp root (`laneTmpRoot()`), never the working directory.
  *
+ * LANE ROOTS. `<temp>/cesium-lane/<lane>` is kept while anything in it is
+ * younger than a day, because a lane may still be running. `--finished-lanes`
+ * names lanes that have returned: their roots go on the delete list whatever
+ * their age, and every execute-time check still applies to them. The slot's
+ * state folder (`_seat`), the default lane (`seat`) and the landing tools'
+ * scratch (`landing`) can never be named; a named lane with no root is listed
+ * in the plan and printed.
+ *
+ * CLAUDE SESSIONS. The running session is the folder `CLAUDE_SESSION_ID`
+ * names; without the variable no folder is named, and a session folder with
+ * anything younger than a day in it is kept whether or not it holds files.
+ *
+ * EVIDENCE. A folder inside a delete target holding a `.png`/`.webp` is
+ * evidence unless every such image in it has the bytes of an image the
+ * repository tracks (a built tree's copies of the repo's own assets).
+ *
  * Exit: 0 ok · 1 refused (unbanked evidence, bad plan) · 2 cannot determine
  *
  * @module Tools/temp-hygiene
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { LANE_TMP_NAMESPACE, laneTmpRoot } from "./lib/lane-tmp.mjs";
+import {
+  DEFAULT_LANE_NAME,
+  LANE_TMP_NAMESPACE,
+  laneTmpRoot,
+} from "./lib/lane-tmp.mjs";
 
 /**
  * Where `--plan` writes without `--out`: the lane temp root, so a plan run from
@@ -203,16 +224,18 @@ function classifyName(name, classes) {
 
 /**
  * The Claude session directory this process belongs to, which is never
- * descended into. Falls back to the newest session folder under the project
- * when the environment does not name one.
+ * descended into: the folder `CLAUDE_SESSION_ID` names. Without the variable
+ * nothing tells this conversation's folder from another's (a folder's
+ * modification time does not), so none is named; the age floor in
+ * `planClaudeSessions` keeps every session folder that is in use.
  *
  * @param {string} claudeRoot
  * @returns {string|null}
  */
 export function runningSessionDirectory(claudeRoot) {
   const declared = process.env.CLAUDE_SESSION_ID;
-  let newest = null;
-  let newestTime = -1;
+  if (declared === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(declared))
+    return null;
   let projects;
   try {
     projects = fs.readdirSync(claudeRoot);
@@ -220,40 +243,161 @@ export function runningSessionDirectory(claudeRoot) {
     return null;
   }
   for (const project of projects) {
-    const projectPath = path.join(claudeRoot, project);
-    let sessions;
-    try {
-      sessions = fs.readdirSync(projectPath);
-    } catch {
-      continue;
-    }
-    for (const session of sessions) {
-      const sessionPath = path.join(projectPath, session);
-      if (declared !== undefined && session === declared) return sessionPath;
-      const stats = lstatSafe(sessionPath);
-      if (stats !== null && stats.mtimeMs > newestTime) {
-        newestTime = stats.mtimeMs;
-        newest = sessionPath;
-      }
-    }
+    const sessionPath = path.join(claudeRoot, project, declared);
+    if (lstatSafe(sessionPath) !== null) return sessionPath;
   }
-  return newest;
+  return null;
+}
+
+/** The lane folder that holds the heavy-step slot's state; never named finished. */
+export const SLOT_STATE_LANE = "_seat";
+
+/** The lane folder of landing-tool scratch (`Tools/landing`). */
+const LANDING_LANE = "landing";
+
+/**
+ * Lane folders that are shared roots, never one finished lane, each with what
+ * it is. `--finished-lanes` refuses every name here (case-folded).
+ */
+export const NEVER_FINISHED_LANES = new Map([
+  [SLOT_STATE_LANE, "the slot's state folder"],
+  [DEFAULT_LANE_NAME, "the root of every process run without a lane name"],
+  [LANDING_LANE, "the landing tools' scratch"],
+]);
+
+const fold = (name) => (CASE_INSENSITIVE_FS ? name.toLowerCase() : name);
+
+/**
+ * Lane names from `--finished-lanes` (comma or space separated). Refuses the
+ * shared lane folders (`NEVER_FINISHED_LANES`) and any name that is not one
+ * lane-root segment.
+ *
+ * @param {string|string[]|null|undefined} value
+ * @returns {string[]}
+ */
+export function parseFinishedLanes(value) {
+  const raw = Array.isArray(value) ? value.join(",") : (value ?? "");
+  const names = raw
+    .split(/[\s,]+/u)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  for (const name of names) {
+    const shared = NEVER_FINISHED_LANES.get(name.toLowerCase());
+    if (shared !== undefined) {
+      throw new Error(
+        `--finished-lanes may never name ${name.toLowerCase()}: it is ${shared}, not a lane`,
+      );
+    }
+    // laneTmpRoot validates the name as one path segment and throws otherwise.
+    laneTmpRoot(name);
+  }
+  return [...new Map(names.map((name) => [fold(name), name])).values()];
+}
+
+/**
+ * The repository this tool belongs to, or null when the module was loaded from
+ * somewhere that is not a file.
+ *
+ * @returns {string|null}
+ */
+function defaultRepoRoot() {
+  try {
+    return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Variables that make git answer for another repository than the one in its
+ * cwd: `GIT_DIR` names a repository and `GIT_INDEX_FILE` an index. `GIT_WORK_TREE`
+ * alone changes nothing git reports for the files listed here, so it is left.
+ */
+const GIT_REPOSITORY_VARIABLES = ["GIT_DIR", "GIT_INDEX_FILE"];
+
+/**
+ * The environment git runs in here: the caller's, without the variables that
+ * choose the repository (a hook exports them), so that the answer is about the
+ * folder asked and no other.
+ *
+ * @returns {Record<string, string|undefined>}
+ */
+function gitEnvironment() {
+  const env = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (GIT_REPOSITORY_VARIABLES.includes(name.toUpperCase())) continue;
+    env[name] = value;
+  }
+  env.GIT_OPTIONAL_LOCKS = "0";
+  return env;
+}
+
+/**
+ * Git blob ids of every `.png`/`.webp` the repository's index tracks, read
+ * once with `git ls-files -s`. Null when git cannot answer, which leaves every
+ * image counted as evidence. Git never takes `GIT_DIR` or `GIT_INDEX_FILE` from
+ * the caller.
+ *
+ * @param {string|null} repoRoot
+ * @returns {{algorithm: string, ids: Set<string>}|null}
+ */
+export function trackedImageBlobIds(repoRoot) {
+  if (repoRoot === null || repoRoot === undefined) return null;
+  const listed = spawnSync("git", ["ls-files", "-s", "-z"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: gitEnvironment(),
+    maxBuffer: 256 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (listed.status !== 0 || typeof listed.stdout !== "string") return null;
+  const ids = new Set();
+  let length = 0;
+  for (const record of listed.stdout.split("\0")) {
+    const match = /^\d{6} ([0-9a-f]{40,64}) \d\t(.+)$/u.exec(record);
+    if (match === null || !/\.(png|webp)$/iu.test(match[2])) continue;
+    ids.add(match[1]);
+    length = match[1].length;
+  }
+  if (ids.size === 0) return null;
+  return { algorithm: length === 64 ? "sha256" : "sha1", ids };
+}
+
+/**
+ * The git blob id of a file's bytes.
+ *
+ * @param {Buffer} bytes
+ * @param {string} algorithm `sha1` or `sha256`.
+ * @returns {string}
+ */
+export function gitBlobId(bytes, algorithm) {
+  return createHash(algorithm)
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest("hex");
 }
 
 /**
  * Classify a temp root into a positive delete list plus keep/residue lists.
  * Read-only: this function never removes anything.
  *
- * @param {{temp?: string, now?: number}} [options]
+ * @param {{temp?: string, now?: number, finishedLanes?: string|string[], repoRoot?: string|null}} [options]
+ *   `finishedLanes` names lanes whose roots go on the delete list whatever
+ *   their age (throws on a shared lane name or a malformed name); `repoRoot` is the
+ *   repository whose tracked images are not evidence (default: this tool's).
  * @returns {object} The plan.
  */
 export function planTempRoot(options = {}) {
   const temp = path.resolve(options.temp ?? os.tmpdir());
   const now = Number(options.now ?? Date.now());
+  const finishedLanes = parseFinishedLanes(options.finishedLanes);
+  const repoRoot =
+    options.repoRoot === undefined ? defaultRepoRoot() : options.repoRoot;
   const protects = protectPaths(temp);
   const claudeRoot = path.join(temp, "claude");
   const runningSession = runningSessionDirectory(claudeRoot);
   const laneRoot = path.join(temp, LANE_TMP_NAMESPACE);
+  const finished = { named: [], missing: [] };
 
   const remove = [];
   const keep = [];
@@ -320,7 +464,14 @@ export function planTempRoot(options = {}) {
       continue;
     }
     if (normalize(target) === normalize(laneRoot)) {
-      planLaneRoots({ laneRoot, now, remove, keep, record });
+      finished.named = planLaneRoots({
+        laneRoot,
+        now,
+        remove,
+        keep,
+        record,
+        finishedLanes,
+      });
       continue;
     }
 
@@ -423,11 +574,17 @@ export function planTempRoot(options = {}) {
     }
   }
 
+  const namedFolded = new Set(finished.named.map(fold));
+  finished.missing = finishedLanes.filter(
+    (name) => !namedFolded.has(fold(name)),
+  );
   const plan = {
     generatedAt: new Date(now).toISOString(),
     generatedAtMs: now,
     temp,
     runningSession,
+    finishedLanes: finished,
+    repoRoot,
     protect: protects,
     delete: remove,
     keep,
@@ -440,7 +597,12 @@ export function planTempRoot(options = {}) {
       residueEntries: residue.length,
     },
   };
-  plan.evidence = { dirs: findEvidenceDirs(plan), receipt: null };
+  const stats = { trackedCopyDirs: 0 };
+  plan.evidence = {
+    dirs: findEvidenceDirs(plan, { stats }),
+    trackedCopyDirs: stats.trackedCopyDirs,
+    receipt: null,
+  };
   return plan;
 }
 
@@ -484,6 +646,19 @@ function planClaudeSessions({
       }
       const summary = measure(sessionPath);
       const age = (now - (summary.newest || now)) / DAY_MS;
+      if (age < PATTERN_AGE_DAYS) {
+        // A session in use writes into its folder; with no variable naming the
+        // running one, anything touched within the floor may be it.
+        record(
+          keep,
+          sessionPath,
+          "young-session",
+          `a session folder touched within ${PATTERN_AGE_DAYS} day — may be running; never deleted while young`,
+          summary,
+          age,
+        );
+        continue;
+      }
       if (summary.files === 0 && summary.links === 0) {
         record(
           remove,
@@ -498,7 +673,9 @@ function planClaudeSessions({
           keep,
           sessionPath,
           "other-session",
-          "another conversation's session — its transcripts are not ours to delete",
+          runningSession === null
+            ? "a session folder with files — not ours to delete (no CLAUDE_SESSION_ID, so no folder is named running)"
+            : "another conversation's session — its transcripts are not ours to delete",
           summary,
           age,
         );
@@ -507,12 +684,17 @@ function planClaudeSessions({
   }
 }
 
-function planLaneRoots({ laneRoot, now, remove, keep, record }) {
+/**
+ * Classify each lane root; returns the finished-lane names that had a root.
+ */
+function planLaneRoots({ laneRoot, now, remove, keep, record, finishedLanes }) {
+  const finished = new Map(finishedLanes.map((name) => [fold(name), name]));
+  const named = [];
   let lanes;
   try {
     lanes = fs.readdirSync(laneRoot);
   } catch {
-    return;
+    return named;
   }
   for (const lane of lanes) {
     const lanePath = path.join(laneRoot, lane);
@@ -520,6 +702,18 @@ function planLaneRoots({ laneRoot, now, remove, keep, record }) {
     if (stats === null) continue;
     const summary = measure(lanePath);
     const age = (now - (summary.newest || stats.mtimeMs)) / DAY_MS;
+    if (finished.has(fold(lane)) && stats.isDirectory()) {
+      named.push(finished.get(fold(lane)));
+      record(
+        remove,
+        lanePath,
+        "finished-lane",
+        `lane named finished by --finished-lanes, ${age.toFixed(1)} d old`,
+        summary,
+        age,
+      );
+      continue;
+    }
     if (age < PATTERN_AGE_DAYS) {
       record(
         keep,
@@ -540,18 +734,40 @@ function planLaneRoots({ laneRoot, now, remove, keep, record }) {
       );
     }
   }
+  return named;
 }
 
 /**
- * Every PNG-bearing directory inside a delete target, `visual-regression/output`
+ * Every evidence directory inside a delete target, `visual-regression/output`
  * trees first. These must be banked before anything is removed
- * (CLAUDE.md, "Evidence Repatriation").
+ * (CLAUDE.md, "Evidence Repatriation"). A directory holding a `.png`/`.webp` is
+ * evidence when at least one such image in it is not byte-identical to an
+ * image the repository tracks (`plan.repoRoot`, else this tool's repository);
+ * a built tree's copies of the repository's own assets are not.
  *
  * @param {object} plan
+ * @param {{tracked?: {algorithm: string, ids: Set<string>}|null, stats?: {trackedCopyDirs: number}}} [options]
  * @returns {string[]} Top-level directories, no nesting.
  */
-export function findEvidenceDirs(plan) {
+export function findEvidenceDirs(plan, options = {}) {
   const found = new Set();
+  const imageDirs = new Set();
+  let tracked = options.tracked;
+  const isTrackedCopy = (file) => {
+    if (tracked === undefined) {
+      tracked = trackedImageBlobIds(
+        plan.repoRoot === undefined ? defaultRepoRoot() : plan.repoRoot,
+      );
+    }
+    if (tracked === null) return false;
+    let bytes;
+    try {
+      bytes = fs.readFileSync(file);
+    } catch {
+      return false;
+    }
+    return tracked.ids.has(gitBlobId(bytes, tracked.algorithm));
+  };
   const walk = (directory) => {
     let entries;
     try {
@@ -572,7 +788,10 @@ export function findEvidenceDirs(plan) {
         }
         walk(child);
       } else if (/\.(png|webp)$/i.test(entry.name)) {
-        found.add(directory);
+        imageDirs.add(directory);
+        if (!found.has(directory) && !isTrackedCopy(child)) {
+          found.add(directory);
+        }
       }
     }
   };
@@ -581,6 +800,11 @@ export function findEvidenceDirs(plan) {
     if (stats !== null && stats.isDirectory() && !stats.isSymbolicLink()) {
       walk(row.path);
     }
+  }
+  if (options.stats !== undefined) {
+    options.stats.trackedCopyDirs = [...imageDirs].filter(
+      (directory) => !found.has(directory),
+    ).length;
   }
   const all = [...found].sort();
   return all.filter(
@@ -907,7 +1131,7 @@ const format = (bytes) =>
 function main(argv) {
   if (argv.includes("--help")) {
     process.stdout.write(
-      "node Tools/temp-hygiene.mjs --plan [--out plan.json] [--temp <dir>]\n" +
+      "node Tools/temp-hygiene.mjs --plan [--out plan.json] [--temp <dir>] [--finished-lanes <a,b>]\n" +
         "node Tools/temp-hygiene.mjs --bank-evidence <archiveDir> --plan plan.json\n" +
         "node Tools/temp-hygiene.mjs --execute --plan plan.json\n",
     );
@@ -950,7 +1174,23 @@ function main(argv) {
     return 0;
   }
 
-  const plan = planTempRoot({ temp: readOption(argv, "--temp") ?? undefined });
+  const finishedLanes = readOption(argv, "--finished-lanes");
+  if (argv.includes("--finished-lanes") && finishedLanes === null) {
+    process.stderr.write(
+      "REFUSED: --finished-lanes needs <lane>[,<lane>...]\n",
+    );
+    return 1;
+  }
+  let plan;
+  try {
+    plan = planTempRoot({
+      temp: readOption(argv, "--temp") ?? undefined,
+      finishedLanes: finishedLanes ?? undefined,
+    });
+  } catch (error) {
+    process.stderr.write(`REFUSED: ${error.message}\n`);
+    return 1;
+  }
   let out = readOption(argv, "--out");
   if (out === null) {
     out = defaultPlanPath();
@@ -967,8 +1207,15 @@ function main(argv) {
   process.stdout.write(
     `PLAN ${out}\nDELETE ${plan.totals.deleteEntries} entries, ${plan.totals.deleteFiles} files, ${format(plan.totals.deleteBytes)}\n` +
       `KEEP ${plan.keep.length} entries, ${format(plan.totals.keepBytes)}   RESIDUE ${plan.totals.residueEntries} entries (kept, listed)\n` +
-      `EVIDENCE ${plan.evidence.dirs.length} PNG-bearing directories inside the delete set${plan.evidence.dirs.length > 0 ? " — --bank-evidence before --execute" : ""}\n`,
+      `EVIDENCE ${plan.evidence.dirs.length} PNG-bearing directories inside the delete set${plan.evidence.dirs.length > 0 ? " — --bank-evidence before --execute" : ""}` +
+      ` (${plan.evidence.trackedCopyDirs} more hold only copies of tracked images and are not evidence)\n`,
   );
+  if (plan.finishedLanes.named.length + plan.finishedLanes.missing.length > 0) {
+    process.stdout.write(
+      `FINISHED LANES on the delete list: ${plan.finishedLanes.named.join(", ") || "none"}` +
+        `${plan.finishedLanes.missing.length > 0 ? `; NO ROOT: ${plan.finishedLanes.missing.join(", ")}` : ""}\n`,
+    );
+  }
   for (const [category, value] of [...byCategory].sort(
     (a, b) => b[1].bytes - a[1].bytes,
   )) {

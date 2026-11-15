@@ -9,7 +9,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -70,6 +69,7 @@ import {
   checkFusedCaptureUsage,
 } from "./lib/same-task-capture.mjs";
 import { parseSvs5073UmbraShapefile } from "./fixtures/nasa-svs-5073/nasa-svs-5073-shapefile.mjs";
+import { mkLaneTmp } from "../lib/lane-tmp.mjs";
 import {
   beginSvsEvidenceRun,
   canonicalSvsArtifactBytes,
@@ -3646,7 +3646,7 @@ test("25 noneclipse control allows no classified cell and at most one code bound
 });
 
 test("26 lifecycle writes RUNNING+lock, immutable red, latest, then unlocks", (t) => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "c1229-svs-life-"));
+  const temporary = mkLaneTmp("c1229-svs-life-");
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
   const { running } = beginSvsEvidenceRun(paths, RUN_ID);
@@ -3661,9 +3661,7 @@ test("26 lifecycle writes RUNNING+lock, immutable red, latest, then unlocks", (t
 });
 
 test("26a finalized v4 latest is canonical, byte-preserved, and receipted before v5 RUNNING", (t) => {
-  const temporary = fs.mkdtempSync(
-    path.join(os.tmpdir(), "c1229-svs-v4-supersession-"),
-  );
+  const temporary = mkLaneTmp("c1229-svs-v4-supersession-");
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
   const v4 = supersededV4Artifact();
@@ -3700,9 +3698,7 @@ test("26a finalized v4 latest is canonical, byte-preserved, and receipted before
 });
 
 test("26b finalized v3 latest is canonical, byte-preserved, and receipted before v5 RUNNING", (t) => {
-  const temporary = fs.mkdtempSync(
-    path.join(os.tmpdir(), "c1229-svs-v3-supersession-"),
-  );
+  const temporary = mkLaneTmp("c1229-svs-v3-supersession-");
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
   const v3 = supersededV3Artifact();
@@ -3795,9 +3791,7 @@ test("26b finalized v3 latest is canonical, byte-preserved, and receipted before
 });
 
 test("26c finalized bounded v2 ERROR is byte-preserved separately before v5 RUNNING", (t) => {
-  const temporary = fs.mkdtempSync(
-    path.join(os.tmpdir(), "c1229-svs-v2-supersession-"),
-  );
+  const temporary = mkLaneTmp("c1229-svs-v2-supersession-");
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
   const v2 = legacyV2Artifact();
@@ -3861,9 +3855,7 @@ test("26d v4, v3, and v2 supersession receipts remain authoritative through fina
       Buffer.from(`${JSON.stringify(legacyV2Artifact(), null, 2)}\n`),
     ],
   ]) {
-    const temporary = fs.mkdtempSync(
-      path.join(os.tmpdir(), `c1229-svs-${name}-receipt-authority-`),
-    );
+    const temporary = mkLaneTmp(`c1229-svs-${name}-receipt-authority-`);
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const paths = createSvsArtifactPaths(RUN_ID, temporary);
     fs.writeFileSync(paths.latest, bytes, { flag: "wx" });
@@ -3885,7 +3877,7 @@ test("26d v4, v3, and v2 supersession receipts remain authoritative through fina
 });
 
 test("27 lifecycle rejects prior RUNNING, extant lock, and alien ownership", (t) => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "c1229-svs-own-"));
+  const temporary = mkLaneTmp("c1229-svs-own-");
   t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
   const paths = createSvsArtifactPaths(RUN_ID, temporary);
   const { running } = beginSvsEvidenceRun(paths, RUN_ID);
@@ -3907,8 +3899,8 @@ function randomNonce() {
 }
 
 test("28 publication tolerates move-then-throw but detects silent unlock", (t) => {
-  const moved = fs.mkdtempSync(path.join(os.tmpdir(), "c1229-svs-move-"));
-  const stuck = fs.mkdtempSync(path.join(os.tmpdir(), "c1229-svs-stuck-"));
+  const moved = mkLaneTmp("c1229-svs-move-");
+  const stuck = mkLaneTmp("c1229-svs-stuck-");
   t.after(() => {
     fs.rmSync(moved, { recursive: true, force: true });
     fs.rmSync(stuck, { recursive: true, force: true });
@@ -4362,7 +4354,7 @@ test("36 lifecycle preserves late foreign owners and recovers stale RUNNING", (t
     }
   });
   const make = (prefix) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const directory = mkLaneTmp(prefix);
     directories.push(directory);
     return createSvsArtifactPaths(RUN_ID, directory);
   };
@@ -5156,7 +5148,7 @@ test("39 first-red remains exact across EEXIST, substitution, deletion, and read
     }
   });
   const make = (prefix) => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const directory = mkLaneTmp(prefix);
     directories.push(directory);
     return createSvsArtifactPaths(RUN_ID, directory);
   };

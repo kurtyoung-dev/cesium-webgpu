@@ -23,15 +23,22 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
 
+import { mkLaneTmp, removeLaneTmp } from "../../../Tools/lib/lane-tmp.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPERS_PATH = resolve(HERE, "../src/Helpers.ts");
+
+// Every case's throwaway package is a folder inside one sandbox under the lane
+// temp root (Tools/lib/lane-tmp.mjs), and the sandbox is removed when this
+// file's tests finish; a killed run leaves it inside the sweepable lane root.
+const SANDBOX = mkLaneTmp("sandcastle-template-");
+test.after(() => removeLaneTmp(SANDBOX));
 
 async function loadHelpers(sourceSubstitution) {
   const plugins = [];
@@ -134,7 +141,7 @@ async function runEmbedded(code, renderer, showFps = false) {
     showFps,
   );
 
-  const root = await mkdtemp(join(tmpdir(), "sandcastle-template-"));
+  const root = await mkdtemp(join(SANDBOX, "case-"));
   await writeFile(
     join(root, "package.json"),
     JSON.stringify({ name: "sandcastle-template-case", type: "module" }),

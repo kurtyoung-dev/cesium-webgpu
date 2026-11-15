@@ -34,8 +34,7 @@
 // Run: node --test Tools/visual-regression/collection-previous-frame-rte.spec.mjs
 
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -43,15 +42,16 @@ import { fileURLToPath } from "node:url";
 import Cartesian3 from "../../packages/engine/Source/Core/Cartesian3.js";
 import EncodedCartesian3 from "../../packages/engine/Source/Core/EncodedCartesian3.js";
 import Matrix4 from "../../packages/engine/Source/Core/Matrix4.js";
+import { mkLaneTmp, removeLaneTmp } from "../lib/lane-tmp.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const engineRoot = resolve(directory, "../../packages/engine/Source");
-// A scratch root named for the SPEC rather than for the lane that wrote it.
-// This file recreates the directory on every run, including in CI, so a lane
-// name here would outlive its lane by years — and it would be swept by a
-// hygiene pass that reads `cesium-lane/<name>` as a live worker's temp.
-const mutantRoot = join(tmpdir(), "collection-previous-frame-rte", "mutants");
-mkdirSync(mutantRoot, { recursive: true });
+// The mutated shader and packer texts are written to one fresh sandbox per run
+// under the lane temp root (Tools/lib/lane-tmp.mjs) and removed when this
+// file's tests finish; a killed run leaves it inside the sweepable lane root,
+// never loose at the temp root.
+const mutantRoot = mkLaneTmp("collection-previous-frame-rte-mutants-");
+test.after(() => removeLaneTmp(mutantRoot));
 
 const read = (relative) =>
   readFileSync(resolve(engineRoot, relative), "utf8").replace(/\r\n/g, "\n");

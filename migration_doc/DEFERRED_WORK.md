@@ -37190,3 +37190,31 @@ under the minimal input set (every optional family absent), with a mutant that a
 - **Owed, and not this batch's:** the weather harvest's F1, F2 and F5 (`lanes-2026-09-26/harvest-weather/LANDING_PACKET_MORIA.md:155`, `:157`, `:163`) are on main in no form; that
   lane's clone is long retired, and they go to the next rows batch. Three notes of pass 1 of rows batch 16b that were addressed to the seat are item 9 of the seat record's list
   "Owed to records round 16" (`lanes-2026-11-13/SEAT_RECORD_2026-11-13.md:304`).
+
+## 2026-11-15 — rows batch 16d: the row that 79 of the 83 temp-root allow-list reasons cite (`DX-TEMP-ROOT-SANDBOXES`)
+
+Rows batch 16d (the seat Gandalf; filed with the tools 17a patch, which adds `Tools/lib/temp-root-allowlist.mjs`). 79 of the 83 reasons in that file cite "row DX-TEMP-ROOT-SANDBOXES" (75 end with it,
+four cite it before a further note, and four name only a path that is never created: `generate-tooling-catalog.spec.mjs`, `lane-tmp.spec.mjs`, `temp-hygiene.spec.mjs`,
+`nasa-svs-5073-umbra-fixture.spec.mjs`), and the row is in no other tracked file; this section is the row. The numbers are measured from the allow-list and the census at the patch
+(`npm run test-tools-lib` holds the list equal to the census). No browser, build or server was used for this row.
+
+### DX-TEMP-ROOT-SANDBOXES — 83 tracked tools and specs still build a path directly under the system temp root instead of taking it from `Tools/lib/lane-tmp.mjs`, so a killed run leaves a loose folder nothing can tell from another program's — **OPEN** (tools; the allow-list is the work list)
+
+`Tools/lib/temp-root-census.spec.mjs` (runner `test-tools-lib`) pins 83 tracked files and 229 sites, each row with its exact site count and a one-line reason in
+`Tools/lib/temp-root-allowlist.mjs`, and fails on a file that is not listed, on a row whose file is gone or builds nothing there any more, and on a wrong count. An `mkdtemp` whose prefix
+contains the temp root is a site wherever its sandbox lands, the lane namespace included. Of the 229 sites: 204 are `mkdtemp` sandboxes made directly in the temp root, and 191 of the 204 are
+in 64 files (58 files with 181 sites, and six files that also name a path or write a loose file: `pre-push-guard.spec.mjs`, `provision-worker-clone-codex-trust.spec.mjs`,
+`spec-runner-census.spec.mjs`, `c11-146-route-evidence.spec.mjs`, `elevation-material-height-derivation.spec.mjs` and `material-texture-late-adoption.spec.mjs`, with 10 sandbox sites among
+their 17); the other 7 sites of those six files are named paths or loose files; 10 sites in 6 files are held by patches in flight (`cloud-realization-override.spec.mjs` 3,
+`cloud-orbital-ladder-contract.spec.mjs` 2, `cloud-tier-single-source.spec.mjs` 2, `fixtures/probe-water-cells-support.mjs` 1, `probe-runtime.spec.mjs` 1, `water-mask-assets.spec.mjs` 1);
+and 21 sites in the other 13 files are not plain sandboxes: the two catalog generators (a trust boundary, left on the list on purpose; their `mkdtemp` folders are removed in a `finally`),
+`Tools/landing/rebase-shared-mutants.mjs` 1 (a sandbox made by hand inside the lane namespace, to be taken from the lane helper with the landing tools' own change), paths that are named and
+never created (`lane-tmp.spec.mjs` 2, `temp-hygiene.spec.mjs` 1, `generate-tooling-catalog.spec.mjs` 1, `nasa-svs-5073-umbra-fixture.spec.mjs` 1), and loose files or karma profiles at the root
+(`Specs/karma.conf.cjs` 3, `scripts/__tests__/karmaTestRun.spec.mjs` 6, three `probe-edge-*.mjs` probes 3, `globe-night-imagery-option.spec.mjs` 1). By kind the 229 are 204
+`mkdtemp-join`, 22 `join-fixed`, 2 `template-path` and 1 `join-computed`. The largest rows are `c12-29-s5-multiview-gate.spec.mjs` 21, `c12-29-s5-replacement-device-gate.spec.mjs` 16,
+`moon-globe-depth-routing.spec.mjs` 13, `c12-29-s4-orbital-sunrise-gate.spec.mjs` 12, `c12-31-aureole-gate.spec.mjs` 12 and `build-source-identity.spec.mjs` 10; four of those six are gates.
+The census does not follow a temp root handed to a helper that builds under it, a prefix that does not contain the root in its own text, nor `process.env.TEMP` (its header says so).
+**Read at the patch; the census spec ran.** **Closes when:** every row is migrated to a sandbox from `Tools/lib/lane-tmp.mjs` (each migration lowers or deletes its row in the same
+change) or is deleted as a path that is never created, and the allow-list holds only the catalog generators with their reason. Next: the four gate specs above (61 sites), then
+`moon-globe-depth-routing.spec.mjs` and `build-source-identity.spec.mjs` (23 sites; not gates), then the karma pair together. **Source:** `Tools/lib/temp-root-allowlist.mjs`;
+`Tools/lib/temp-root-census.spec.mjs`; `Tools/lib/lane-tmp.mjs`.

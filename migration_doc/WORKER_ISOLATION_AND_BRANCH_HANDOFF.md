@@ -793,6 +793,14 @@ The other 112 had a `finally` or a `t.after` that a killed run, a test timeout o
 never reached, which is why the second half of the fix is allocating somewhere a sweep can finish the
 job.
 
+**A census holds the line.** `Tools/lib/temp-root-census.spec.mjs` (runner `test-tools-lib`) fails
+when a tracked file under `Tools/`, `scripts/`, `Specs/` or a `packages/*/Specs` folder builds a path
+directly under the temp root (an mkdtemp sandbox, a fixed or computed name, a path in a template or a
+concatenation) unless the file is on the shrink-only allow-list `Tools/lib/temp-root-allowlist.mjs`
+with its exact site count and a one-line reason. A change that moves a file onto the lane helper
+lowers or deletes its row in the same change; a new site, a stale row or a wrong count is red.
+`Tools/lib/lane-tmp.mjs` is the one file that may build there.
+
 **Before a worker, reviewer or executor RETURNS, it removes everything it created outside its clone
 and its `_lane-out/`.** Its lane temp root, downloaded bundles, Playwright and Karma profiles it
 started, mutant copies, served-bundle dumps. The return message says what it removed. A lane that
@@ -812,13 +820,22 @@ never use `%TEMP%` directly as a scratch location for a backup — that is what 
 
 **After a landing is PUSHED the seat sweeps.** `node Tools/temp-hygiene.mjs --plan --out <plan.json>`
 classifies the Temp root into an explicit positive delete list and prints what it would remove;
-`--bank-evidence <archiveDir> --plan <plan.json>` zips every PNG-bearing `visual-regression/output`
-tree inside that list into the worker archive and REFUSES when the PNG count in the zip differs from
-disk; `--execute --plan <plan.json>` then deletes exactly that list, re-checking the protect set, the
+`--bank-evidence <archiveDir> --plan <plan.json>` zips every evidence folder inside that list (a
+`visual-regression/output` tree, or a folder holding a `.png`/`.webp` that is not a byte copy of an
+image the repository tracks, so a built tree's own assets are not evidence) into the worker archive
+and REFUSES when the PNG count in the zip differs from disk; `--execute --plan <plan.json>` then
+deletes exactly that list, re-checking the protect set, the
 temp containment, the plan's own age horizon and a live-lock probe on every path, and unlinking every
 junction inside a target before recursing. The plan is written to disk to be read before it is used —
 the positive-list rule (seat memory `feedback_destructive_scripts_positive_list.md`, 2026-09-11), not
 a regex deciding what to delete at delete time.
+
+A lane root `<tmpdir>/cesium-lane/<lane>` is kept while anything in it is younger than a day, since a
+lane may still be running. Once lanes have returned, `--plan --finished-lanes <a,b>` puts their roots
+on the delete list whatever their age; every execute-time check above still applies to them, the
+slot's state folder `_seat` can never be named, and a name with no root is printed (`NO ROOT`). The
+running Claude session is the folder `CLAUDE_SESSION_ID` names; without the variable no folder is
+named running, and no session folder with anything younger than a day in it is deleted, empty or not.
 
 **The durable places are only three.** The clone's `_lane-out/`, the main repo's gitignored
 `Tools/visual-regression/output/`, and `cesium-webgpu-worker-archive`. Anything of value in a lane's

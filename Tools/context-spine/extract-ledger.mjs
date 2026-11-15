@@ -70,8 +70,133 @@ function compactSummary(raw, maxChars = 420) {
   return `${cleaned.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
+const RULING_ID_PATTERN = "R-\\d{4}-\\d{2}-\\d{2}-[A-Za-z0-9-]+";
+
+/** A level 2-4 heading whose first token is a ruling id, bare or in backticks. */
+const RULING_HEADING_RE = new RegExp(
+  `^(#{2,4})\\s+\`?(${RULING_ID_PATTERN})\`?(.*)$`,
+);
+
+/** A table cell that is exactly a ruling id, bare or in backticks. */
+const RULING_ID_CELL_RE = new RegExp(`^\`?(${RULING_ID_PATTERN})\`?$`);
+
+const MARKDOWN_HEADING_RE = /^(#{1,6})\s+(.*)$/;
+
+const MARKDOWN_FENCE_RE = /^\s*(?:```|~~~)/;
+
+/**
+ * Split a markdown table row into trimmed cells, honouring `\|` escapes.
+ *
+ * @param {string} line
+ * @returns {string[]}
+ */
+function splitTableRow(line) {
+  return line
+    .replace(/\\\|/g, "__ESCAPED_PIPE__")
+    .split("|")
+    .slice(1, -1)
+    .map((c) => c.replaceAll("__ESCAPED_PIPE__", "|").trim());
+}
+
+/**
+ * Find every ruling start of one `MAINTAINER_RULINGS_*.md` file and where each
+ * ruling's text ends.
+ *
+ * A ruling starts at a level 2-4 heading whose first token is a ruling id, or
+ * at a table row whose first cell is exactly a ruling id. A heading ruling ends
+ * at the next ruling start or at the next heading of its own level or higher,
+ * whichever comes first; a table-row ruling is its row alone. Lines inside a
+ * fenced code block are never headings or rulings. A ruling carries nothing
+ * from outside its own lines: a file's headings do not say which paragraph
+ * governs which ruling, so no section text is attached to a ruling.
+ *
+ * @param {string[]} lines
+ * @returns {object[]}
+ */
+function scanRulingStarts(lines) {
+  const starts = [];
+  const headings = [];
+  let inFence = false;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (MARKDOWN_FENCE_RE.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const rulingHeading = line.match(RULING_HEADING_RE);
+    if (rulingHeading) {
+      const level = rulingHeading[1].length;
+      starts.push({
+        kind: "heading",
+        id: rulingHeading[2],
+        level,
+        titleSuffix: rulingHeading[3]
+          .trim()
+          .replace(/^[—–:-]\s*/, "")
+          .trim(),
+        startIdx: i,
+      });
+      headings.push({ idx: i, level });
+      continue;
+    }
+
+    const heading = line.match(MARKDOWN_HEADING_RE);
+    if (heading) {
+      headings.push({ idx: i, level: heading[1].length });
+      continue;
+    }
+
+    if (line.trimStart().startsWith("|")) {
+      const cells = splitTableRow(line);
+      const idMatch = (cells[0] ?? "").match(RULING_ID_CELL_RE);
+      if (idMatch) {
+        starts.push({
+          kind: "row",
+          id: idMatch[1],
+          level: Infinity,
+          subject: cells[1] ?? "",
+          decision: cells.slice(2).join(" | "),
+          startIdx: i,
+        });
+      }
+    }
+  }
+
+  const boundaries = new Set([
+    ...headings.map((h) => h.idx),
+    ...starts.map((s) => s.startIdx),
+  ]);
+  const startIdxSet = new Set(starts.map((s) => s.startIdx));
+
+  for (const cur of starts) {
+    let endIdx = lines.length - 1;
+    if (cur.kind === "row") {
+      endIdx = cur.startIdx;
+    } else {
+      for (let k = cur.startIdx + 1; k < lines.length; k += 1) {
+        if (!boundaries.has(k)) continue;
+        const h = headings.find((x) => x.idx === k);
+        if (startIdxSet.has(k) || (h && h.level <= cur.level)) {
+          endIdx = k - 1;
+          break;
+        }
+      }
+    }
+    cur.endIdx = endIdx;
+  }
+
+  return starts;
+}
+
 /**
  * Parse `MAINTAINER_RULINGS_*.md` files and resolve `amends` / `supersedes` / `vacates`.
+ *
+ * Every ruling heading and every ruling table row becomes an entry. A table
+ * row whose id also heads a ruling section anywhere is not an entry of its own:
+ * the heading is the ruling and the row only indexes it.
  *
  * @param {string} repoRoot
  * @param {string[]} absFiles
@@ -84,30 +209,29 @@ function parseMaintainerRulings(repoRoot, absFiles) {
   const entries = [];
   const byRulingId = new Map();
 
-  for (const absPath of sorted) {
-    const relPath = toPosixRel(repoRoot, absPath);
+  const scanned = sorted.map((absPath) => {
     const lines = fs.readFileSync(absPath, "utf8").split(/\r?\n/);
+    return { absPath, lines, starts: scanRulingStarts(lines) };
+  });
+  const headingIds = new Set(
+    scanned.flatMap((f) =>
+      f.starts.filter((s) => s.kind === "heading").map((s) => s.id),
+    ),
+  );
 
-    const starts = [];
-    for (let i = 0; i < lines.length; i += 1) {
-      const hm = lines[i].match(
-        /^#{2,4}\s+`?(R-\d{4}-\d{2}-\d{2}-[A-Za-z0-9-]+)`?(?:\s*[—–:-]\s*(.*))?$/,
-      );
-      if (hm) {
-        starts.push({
-          id: hm[1],
-          titleSuffix: (hm[2] ?? "").trim(),
-          startIdx: i,
-        });
-      }
-    }
+  for (const { absPath, lines, starts } of scanned) {
+    const relPath = toPosixRel(repoRoot, absPath);
 
-    for (let s = 0; s < starts.length; s += 1) {
-      const cur = starts[s];
-      const endIdx =
-        s + 1 < starts.length ? starts[s + 1].startIdx - 1 : lines.length - 1;
-      const bodyLines = lines.slice(cur.startIdx + 1, endIdx + 1);
+    for (const cur of starts) {
+      if (cur.kind === "row" && headingIds.has(cur.id)) continue;
+      const endIdx = cur.endIdx;
+      const bodyLines =
+        cur.kind === "row"
+          ? [[cur.subject, cur.decision].filter(Boolean).join(" | ")]
+          : lines.slice(cur.startIdx + 1, endIdx + 1);
       const bodyText = bodyLines.join("\n");
+      const titleSuffix =
+        cur.kind === "row" ? compactSummary(cur.subject, 1e9) : cur.titleSuffix;
 
       const amendsSet = new Set();
       for (const am of bodyText.matchAll(
@@ -117,20 +241,25 @@ function parseMaintainerRulings(repoRoot, absFiles) {
       }
 
       let status = "ACTIVE";
-      if (/\b(?:VACATED|WITHDRAWN)\b/.test(cur.titleSuffix)) {
+      if (/\b(?:VACATED|WITHDRAWN)\b/.test(titleSuffix)) {
         status = "VACATED";
       }
 
+      // The summary: a table row's decision, or the first non-empty line of
+      // the ruling's body (its title when the body has none); the line is cut
+      // to 420 characters, and nothing after it is read.
       const firstPara =
-        bodyLines
-          .map((l) => l.trim())
-          .find(
-            (l) =>
-              l.length > 0 &&
-              !l.startsWith("#") &&
-              !l.startsWith("Authority:") &&
-              !l.startsWith("---"),
-          ) ?? cur.titleSuffix;
+        cur.kind === "row"
+          ? compactSummary(cur.decision || cur.subject, 420)
+          : (bodyLines
+              .map((l) => l.trim())
+              .find(
+                (l) =>
+                  l.length > 0 &&
+                  !l.startsWith("#") &&
+                  !l.startsWith("Authority:") &&
+                  !l.startsWith("---"),
+              ) ?? titleSuffix);
 
       const entry = {
         id: cur.id,
@@ -141,7 +270,7 @@ function parseMaintainerRulings(repoRoot, absFiles) {
         docKind: "ruling",
         status,
         batchNum: extractMaxBatchNumber(bodyText),
-        title: cur.titleSuffix ? `${cur.id} — ${cur.titleSuffix}` : cur.id,
+        title: titleSuffix ? `${cur.id} — ${titleSuffix}` : cur.id,
         summary: compactSummary(firstPara, 420),
         amendsIds: [...amendsSet],
         citedPaths: extractCitedPaths(bodyText),
